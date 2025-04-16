@@ -1,21 +1,27 @@
-# 🎮 gymnasium-recorder
+# 🎮 Gymnasium Recorder
 
 🎬 Record and replay Atari gameplay as Hugging Face datasets with ease
 
 ## 📖 Overview
 
-Gymnasium Recorder is a tool that wraps Gymnasium environments (specifically Atari games) to record gameplay sessions as datasets. It captures frames and actions, saving them locally or uploading them directly to Hugging Face Hub. The tool also supports replaying recorded sessions to verify environment determinism.
+Gymnasium Recorder is a tool that wraps Gymnasium environments (specifically Atari games) to record gameplay sessions as datasets. It captures frames and actions, saving them locally or uploading them directly to Hugging Face Hub. 
 
-The recorder provides an interactive pygame interface for playing Atari games while recording your actions, making it easy to create training datasets for reinforcement learning models.
+The recorder provides an interactive pygame interface for playing Atari games while recording your actions, making it easy to create training datasets for reinforcement learning models. It also supports replaying recorded sessions to verify environment determinism.
 
 ## 🚀 Installation
 
-1. Clone the repository
-2. Create and activate the conda environment:
-   ```bash
-   source activate-env.sh
-   ```
-3. Create a `.env` file with your Hugging Face token (copy from `.env.example`)
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/gymnasium-recorder.git
+cd gymnasium-recorder
+
+# Create and activate the conda environment
+source activate-env.sh
+
+# Create a .env file with your Hugging Face token
+cp .env.example .env
+# Edit .env with your token
+```
 
 ## 🛠️ Usage
 
