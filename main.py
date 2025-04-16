@@ -10,20 +10,23 @@ import pygame
 import threading
 import queue
 import asyncio
+import pandas as pd
+import sys
 
 class AtariVideoRecorder(gym.Wrapper):
-    def __init__(self, env, output_dir="videos", fps=30):
+    def __init__(self, env, output_dir="videos", fps=30, record=True):
         super().__init__(env)
         self.output_dir = output_dir
         self.fps = fps
+        self.record = record
         self.frame_shape = self.observation_space.shape
         self.episode_count = 0
         self.frame_counter = 0
         self.action_log = []
+        self.episode_seed = None
+        self.recording_started = False
 
-        # Use the environment's ID as the base name
         self.env_id = self.env.spec.id.replace("-", "_")
-
         os.makedirs(self.output_dir, exist_ok=True)
 
         pygame.init()
@@ -48,13 +51,26 @@ class AtariVideoRecorder(gym.Wrapper):
 
     def reset(self, **kwargs):
         self._stop_video_writer()
+        self.recording_started = False
 
-        self.episode_count += 1
+        if self.record:
+            self.episode_count += 1
+            self.episode_seed = kwargs.get('seed', int(datetime.now().timestamp()))
+        else:
+            self.episode_seed = getattr(self, 'episode_seed', None)
+
+        if self.episode_seed is not None:
+            kwargs['seed'] = self.episode_seed
+
+        obs, info = self.env.reset(**kwargs)
+        return obs, info
+
+    def _start_video_writer(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
         base_filename = f"{self.env_id}_episode_{self.episode_count}_{timestamp}"
         self.video_filename = os.path.join(self.output_dir, base_filename + ".avi")
         self.log_filename = os.path.join(self.output_dir, base_filename + "_actions.csv")
+        self.seed_filename = os.path.join(self.output_dir, base_filename + "_seed.txt")
 
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         self.video_writer = cv2.VideoWriter(
@@ -69,14 +85,19 @@ class AtariVideoRecorder(gym.Wrapper):
         self.frame_counter = 0
         self.action_log = []
 
-        obs, info = self.env.reset(**kwargs)
-        self._queue_frame(obs, action=None)
-
-        return obs, info
+        with open(self.seed_filename, 'w') as f:
+            f.write(str(self.episode_seed))
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
-        self._queue_frame(obs, action)
+
+        if self.record:
+            if not self.recording_started and action != self.default_action:
+                self.recording_started = True
+                self._start_video_writer()
+                self._queue_frame(obs, action)
+            elif self.recording_started:
+                self._queue_frame(obs, action)
 
         if terminated or truncated:
             self._stop_video_writer()
@@ -105,12 +126,11 @@ class AtariVideoRecorder(gym.Wrapper):
         self.video_writer.release()
 
     def _stop_video_writer(self):
-        if self.writer_thread is not None:
+        if self.recording_started and self.writer_thread is not None:
             self.stop_writer.set()
             self.writer_thread.join()
             self.writer_thread = None
 
-            # Save actions to CSV
             if self.log_filename:
                 with open(self.log_filename, 'w') as f:
                     f.write("frame,action\n")
@@ -158,16 +178,49 @@ class AtariVideoRecorder(gym.Wrapper):
             clock.tick(self.fps)
             await asyncio.sleep(1.0 / self.fps)
 
+    def replay_from_csv(self, csv_path):
+        actions_df = pd.read_csv(csv_path)
+
+        seed_path = csv_path.replace("_actions.csv", "_seed.txt")
+        if os.path.exists(seed_path):
+            with open(seed_path, 'r') as f:
+                self.episode_seed = int(f.read().strip())
+        else:
+            print("[Warning] Seed file not found. Replay may not be deterministic.")
+
+        obs, info = self.reset(seed=self.episode_seed)
+        done = False
+        clock = pygame.time.Clock()
+
+        for _, row in actions_df.iterrows():
+            action = row['action']
+            if pd.isna(action):
+                continue
+            obs, reward, terminated, truncated, info = self.step(int(action))
+            self._render_frame(obs)
+            done = terminated or truncated
+            clock.tick(self.fps)
+
     def close(self):
         self._stop_video_writer()
         pygame.quit()
         super().close()
 
 async def main():
-    env = gym.make("BreakoutNoFrameskip-v4", render_mode="rgb_array")
-    env = AtariVideoRecorder(env, output_dir="videos", fps=30)
-    try: await env.play()
-    finally: env.close()
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".csv"):
+        env = gym.make("BreakoutNoFrameskip-v4", render_mode="rgb_array")
+        recorder = AtariVideoRecorder(env, output_dir="videos", fps=30, record=False)
+        try:
+            recorder.replay_from_csv(sys.argv[1])
+        finally:
+            recorder.close()
+    else:
+        env = gym.make("BreakoutNoFrameskip-v4", render_mode="rgb_array")
+        recorder = AtariVideoRecorder(env, output_dir="videos", fps=30, record=True)
+        try:
+            await recorder.play()
+        finally:
+            recorder.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
