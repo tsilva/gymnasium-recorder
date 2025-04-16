@@ -1,4 +1,8 @@
-# 🎮 Gymnasium Recorder
+# 🎮 gymnasium-recorder
+
+<p align="center">
+  <img src="logo.png" alt="Logo" width="400"/>
+</p>
 
 🎬 Record and replay Atari gameplay as Hugging Face datasets with ease
 
