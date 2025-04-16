@@ -207,15 +207,25 @@ class AtariVideoRecorder(gym.Wrapper):
         super().close()
 
 async def main():
-    if len(sys.argv) > 1 and sys.argv[1].endswith(".csv"):
-        env = gym.make("BreakoutNoFrameskip-v4", render_mode="rgb_array")
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <env_id> [actions.csv]")
+        print("Example: python main.py BreakoutNoFrameskip-v4")
+        sys.exit(1)
+
+    env_id = sys.argv[1]
+    if "NoFrameskip" not in env_id:
+        print("Error: Only NoFrameskip environments are supported.")
+        sys.exit(1)
+
+    if len(sys.argv) > 2 and sys.argv[2].endswith(".csv"):
+        env = gym.make(env_id, render_mode="rgb_array")
         recorder = AtariVideoRecorder(env, output_dir="videos", fps=30, record=False)
         try:
-            recorder.replay_from_csv(sys.argv[1])
+            recorder.replay_from_csv(sys.argv[2])
         finally:
             recorder.close()
     else:
-        env = gym.make("BreakoutNoFrameskip-v4", render_mode="rgb_array")
+        env = gym.make(env_id, render_mode="rgb_array")
         recorder = AtariVideoRecorder(env, output_dir="videos", fps=30, record=True)
         try:
             await recorder.play()
