@@ -20,7 +20,6 @@ class AtariVideoRecorder(gym.Wrapper):
         self.fps = fps
         self.record = record
         self.frame_shape = self.observation_space.shape
-        self.episode_count = 0
         self.frame_counter = 0
         self.action_log = []
         self.episode_seed = None
@@ -54,8 +53,8 @@ class AtariVideoRecorder(gym.Wrapper):
         self.recording_started = False
 
         if self.record:
-            self.episode_count += 1
-            self.episode_seed = kwargs.get('seed', int(datetime.now().timestamp()))
+            if self.episode_seed is None:
+                self.episode_seed = kwargs.get('seed', int(datetime.now().timestamp()))
         else:
             self.episode_seed = getattr(self, 'episode_seed', None)
 
@@ -67,7 +66,7 @@ class AtariVideoRecorder(gym.Wrapper):
 
     def _start_video_writer(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_filename = f"{self.env_id}_episode_{self.episode_count}_{timestamp}"
+        base_filename = f"{self.env_id}_episode_{timestamp}"
         self.video_filename = os.path.join(self.output_dir, base_filename + ".avi")
         self.log_filename = os.path.join(self.output_dir, base_filename + "_actions.csv")
         self.seed_filename = os.path.join(self.output_dir, base_filename + "_seed.txt")
