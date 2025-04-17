@@ -1,0 +1,2 @@
+- Append to existing dataset
+- Add gym-retro support

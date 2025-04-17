@@ -1,10 +1,7 @@
-from dotenv import load_dotenv
-load_dotenv()
 
 import os
 import sys
-import gymnasium as gym
-import ale_py
+import time
 import numpy as np
 import pygame
 import threading
@@ -16,7 +13,14 @@ from huggingface_hub import whoami
 import argparse
 from tqdm import tqdm
 
+from dotenv import load_dotenv
+load_dotenv()
+
+import ale_py
+import gymnasium as gym
 gym.register_envs(ale_py)
+
+REPO_PREFIX = "GymnasiumRecording__"
 
 class AtariDatasetRecorder(gym.Wrapper):
     """
@@ -36,16 +40,21 @@ class AtariDatasetRecorder(gym.Wrapper):
         self.current_keys = set()
         self.key_lock = threading.Lock()
         self.key_to_action = {
-            pygame.K_SPACE: 1,
+            pygame.K_UP: 1,
             pygame.K_RIGHT: 2,
-            pygame.K_LEFT: 3
+            pygame.K_LEFT: 3,
+            pygame.K_DOWN: 4
         }
         self.noop_action = 0
+
+        self.episode_ids = []
         self.frames = []
         self.actions = []
+        self.steps = []
+
         self.temp_dir = tempfile.mkdtemp()
 
-    def _record_frame(self, frame, action):
+    def _record_frame(self, episode_id, step, frame, action):
         """
         Save a frame and action to temporary storage.
         """
@@ -53,6 +62,8 @@ class AtariDatasetRecorder(gym.Wrapper):
         img = PILImage.fromarray(frame.astype(np.uint8))
         path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
         img.save(path, format="PNG")
+        self.episode_ids.append(episode_id)
+        self.steps.append(step)
         self.frames.append(path)
         self.actions.append(int(action))
 
@@ -87,58 +98,61 @@ class AtariDatasetRecorder(gym.Wrapper):
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
 
-    async def record(self):
+    async def record(self, fps=30):
         self.recording = True
-        try: return await self._record()
+        try: return await self._record(fps=fps)
         finally: self.recording = False
 
-    async def _record(self):
+    async def _record(self, fps=30):
         self.recording = True
         try: 
-            await self.play()
-            features = Features({"image": HFImage(), "action": Value("int64")})
-            data = {"image": self.frames, "action": self.actions}
+            await self.play(fps=fps)
+            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64") ,"action": Value("int64")})
+            data = {"episode_id" : self.episode_ids, "image": self.frames, "step" : self.steps, "action": self.actions}
             dataset = Dataset.from_dict(data, features=features)
             return dataset
         finally: 
             self.recording = False
 
-    async def play(self):
-        try: await self._play()
+    async def play(self, fps=30):
+        try: await self._play(fps)
         finally: self.close()
 
-    async def _play(self):
+    async def _play(self, fps=30):
         """
         Main loop for interactive gameplay and recording.
         """
         clock = pygame.time.Clock()
         
+        self.episode_ids.clear()
         self.frames.clear()
         self.actions.clear()
+        self.steps.clear()
 
+        episode_id = int(time.time())
         obs, _ = self.env.reset()
         done = False
         step = 0
         while not done:
             if not self._input_loop(): break
             action = self._get_user_action()
-            self._record_frame(obs, action)
+            self._record_frame(episode_id, step, obs, action)
             obs, _, terminated, truncated, _ = self.env.step(action)
             done = terminated or truncated
             self._render_frame(obs)
-            clock.tick(30)
-            await asyncio.sleep(1.0 / 30)
+            clock.tick(fps)
+            await asyncio.sleep(1.0 / fps)
             step += 1 
 
-    async def replay(self, actions):
+    async def replay(self, actions, fps=30):
         clock = pygame.time.Clock()
         obs, _ = self.env.reset()
         self._render_frame(obs)
         for action in tqdm(actions):
             obs, _, _, _, _ = self.env.step(action)
             self._render_frame(obs)
-            clock.tick(30)
-            await asyncio.sleep(1.0 / 30)
+            clock.tick(fps)
+            await asyncio.sleep(1.0 / fps)
 
     def close(self):
         """
@@ -148,20 +162,21 @@ class AtariDatasetRecorder(gym.Wrapper):
         super().close()
 
 def env_id_to_hf_repo_id(env_id):
-    if "NoFrameskip" not in env_id:
-        print("Error: Only NoFrameskip environments are supported.")
-        sys.exit(1)
+    #if "NoFrameskip" not in env_id:
+    #    print("Error: Only NoFrameskip environments are supported.")
+    #    sys.exit(1)
 
     user_info = whoami()
     username = user_info.get("name") or user_info.get("user") or user_info.get("username")
-    env_id_underscored = env_id.replace("-", "_")
-    hf_repo_id = f"{username}/GymnasiumUserPlay__{env_id_underscored}"
+    env_id_underscored = env_id.replace("-", "_").replace("/", "_")
+    hf_repo_id = f"{username}/{REPO_PREFIX}{env_id_underscored}"
     return hf_repo_id
 
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
-    parser.add_argument("mode", type=str, choices=["record", "playback"], help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser.add_argument("mode", type=str, choices=["record", "playback"], help="Mode of operation: 'record' or 'playback'")
     parser.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser.add_argument("--fps", type=int, default=15, help="Frames per second for playback")
     args = parser.parse_args()
 
     env_id = args.env_id
@@ -170,14 +185,14 @@ async def main():
     if args.mode == "record":
         env = gym.make(env_id, render_mode="rgb_array")
         recorder = AtariDatasetRecorder(env)
-        dataset = await recorder.record()
+        dataset = await recorder.record(fps=args.fps)
         dataset.push_to_hub(hf_repo_id)
     elif args.mode == "playback":
         env = gym.make(env_id, render_mode="rgb_array")
         recorder = AtariDatasetRecorder(env)
         dataset = load_dataset(hf_repo_id, split="train")
         actions = dataset["action"]
-        await recorder.replay(actions)
+        await recorder.replay(actions, fps=args.fps)
 
 if __name__ == "__main__":
     asyncio.run(main())
