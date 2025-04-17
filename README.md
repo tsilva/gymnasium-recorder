@@ -1,16 +1,17 @@
 # 🎮 gymnasium-recorder
 
 <p align="center">
-  <img src="logo.png" alt="Logo" width="400"/>
+  <img src="logo.jpg" alt="Logo" width="400"/>
 </p>
 
-🎬 Record and replay Atari gameplay as Hugging Face datasets with ease
+
+🎬 Record Gymnasium gameplays as Hugging Face datasets with ease
 
 ## 📖 Overview
 
-Gymnasium Recorder is a tool that wraps Gymnasium environments (specifically Atari games) to record gameplay sessions as datasets. It captures frames and actions, saving them locally or uploading them directly to Hugging Face Hub. 
+gymnasium-recorder is a tool that wraps Gymnasium environments (specifically Atari games) to record gameplay sessions as datasets. It captures frames and actions during interactive play, saving them as structured datasets that can be uploaded to Hugging Face Hub.
 
-The recorder provides an interactive pygame interface for playing Atari games while recording your actions, making it easy to create training datasets for reinforcement learning models. It also supports replaying recorded sessions to verify environment determinism.
+The tool provides a pygame interface for playing Atari games while recording your actions, making it easy to create training datasets for reinforcement learning models. It also supports replaying recorded sessions to verify environment determinism.
 
 ## 🚀 Installation
 
@@ -40,15 +41,15 @@ This will open a pygame window where you can play Breakout. Use the following co
 - Right Arrow: Action 2
 - Left Arrow: Action 3
 
-The session will be saved locally in the `datasets` directory and uploaded to Hugging Face Hub if you've provided a token.
+The session will be automatically saved as a dataset and uploaded to Hugging Face Hub if you've provided a token.
 
 ### Replaying a recorded session
 
 ```bash
-python main.py playback username/breakoutnoframeskip_v4
+python main.py playback BreakoutNoFrameskip-v4
 ```
 
-This will replay a previously recorded session from Hugging Face Hub, verifying that the environment behaves deterministically.
+This will replay a previously recorded session from Hugging Face Hub, allowing you to verify the environment's deterministic behavior.
 
 ## 📄 License
 
