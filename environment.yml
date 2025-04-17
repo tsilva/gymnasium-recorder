@@ -19,3 +19,4 @@ dependencies:
   - ale-py
   - opencv-python
   - pygame
+  - stable-retro

@@ -21,7 +21,7 @@ gym.register_envs(ale_py)
 
 REPO_PREFIX = "GymnasiumRecording__"
 
-class AtariDatasetRecorder(gym.Wrapper):
+class DatasetRecorder(gym.Wrapper):
     """
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
     """
@@ -30,11 +30,10 @@ class AtariDatasetRecorder(gym.Wrapper):
 
         self.recording = False
         self.frame_shape = self.observation_space.shape
-        self.env_id = self.env.spec.id.replace("-", "_")
 
         pygame.init()
         self.screen = pygame.display.set_mode((self.frame_shape[1], self.frame_shape[0]))
-        pygame.display.set_caption(self.env_id)
+        pygame.display.set_caption(self.env._env_id)
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
@@ -64,7 +63,7 @@ class AtariDatasetRecorder(gym.Wrapper):
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
-        self.actions.append(int(action))
+        self.actions.append(list(action))
 
     def _input_loop(self):
         """
@@ -80,13 +79,41 @@ class AtariDatasetRecorder(gym.Wrapper):
 
     def _get_user_action(self):
         """
-        Map pressed keys to actions.
+        Map pressed keys to actions, handling both Atari (Discrete) and stable-retro (MultiBinary) environments.
         """
         with self.key_lock:
-            for key in self.current_keys:
-                if key in self.key_to_action:
-                    return self.key_to_action[key]
-        return self.noop_action
+            if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
+                # SuperMarioBros-Nes: MultiBinary(8) action space
+                action = np.zeros(8, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
+                
+                # @tsilva HACK: clean this up
+                for key in self.current_keys:
+                    if key == pygame.K_q:  # B (Run/Fireball)
+                        action[0] = 1
+                    if key == pygame.K_w:  # B (Run/Fireball)
+                        action[1] = 1
+                    elif key == pygame.K_e:  # Start (Pause)
+                        action[2] = 1
+                    if key == pygame.K_r:  # B (Run/Fireball)
+                        action[3] = 1
+                    elif key == pygame.K_t:    # Down (Crouch/Pipe)
+                        action[4] = 1
+                    elif key == pygame.K_y:   # A (Jump)
+                        action[5] = 1
+                    elif key == pygame.K_LEFT:    # Left
+                        action[6] = 1
+                    elif key == pygame.K_RIGHT:   # Right
+                        action[7] = 1
+                print(action)
+                return action
+            else:
+                # Atari: Discrete action space
+                for key in self.current_keys:
+                    if key in self.key_to_action:
+                        return self.key_to_action[key]
+                return self.noop_action
+
+
 
     def _render_frame(self, frame):
         """
@@ -106,7 +133,7 @@ class AtariDatasetRecorder(gym.Wrapper):
         self.recording = True
         try: 
             await self.play(fps=fps)
-            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64") ,"action": Value("int64")})
+            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64"), "action": Value("int64")})
             data = {"episode_id" : self.episode_ids, "image": self.frames, "step" : self.steps, "action": self.actions}
             dataset = Dataset.from_dict(data, features=features)
             return dataset
@@ -167,6 +194,18 @@ def env_id_to_hf_repo_id(env_id):
     hf_repo_id = f"{username}/{REPO_PREFIX}{env_id_underscored}"
     return hf_repo_id
 
+def create_env(env_id):
+    if env_id in ['SuperMarioBros-Nes']:
+        import retro
+        env = retro.make(game='SuperMarioBros-Nes', state='Level1-1', render_mode="rgb_array")
+        env._env_id = env_id
+        env._stable_retro = True
+    else:
+        env = gym.make(env_id, render_mode="rgb_array")
+        env._env_id = env.spec.id.replace("-", "_")
+    return env
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
     parser.add_argument("mode", type=str, choices=["record", "playback"], help="Mode of operation: 'record' or 'playback'")
@@ -179,16 +218,18 @@ async def main():
     try: loaded_dataset = load_dataset(hf_repo_id, split="train")
     except: pass
 
+
+
     if args.mode == "record":
-        env = gym.make(env_id, render_mode="rgb_array")
-        recorder = AtariDatasetRecorder(env)
+        env = create_env(env_id)
+        recorder = DatasetRecorder(env)
         recorded_dataset = await recorder.record(fps=args.fps)
         final_dataset = concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
         final_dataset.push_to_hub(hf_repo_id)
     elif args.mode == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
-        env = gym.make(env_id, render_mode="rgb_array")
-        recorder = AtariDatasetRecorder(env)
+        env = create_env(env_id)
+        recorder = DatasetRecorder(env)
         actions = loaded_dataset["action"]
         await recorder.replay(actions, fps=args.fps)
 
