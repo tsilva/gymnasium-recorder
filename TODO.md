@@ -1,2 +1,4 @@
 - Add gym-retro support
+    - Generalize action mapping (env.buttons)
 - Add dataset streaming support
+- Add auto dataset card generation

@@ -1,22 +1,15 @@
 name: gymnasium-recorder
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
   - defaults
 dependencies:
   - python=3.11
   - numpy
   - pillow
-  - torchvision
-  - torchaudio
-  - pytorch             # Will be installed from the pytorch channel
-  - pytorch-cuda=11.8   # Provides the matching CUDA runtime
-  - transformers
   - python-dotenv
-  - matplotlib
-  - gymnasium[atari]
-  - ale-py
-  - opencv-python
   - pygame
-  - stable-retro
+  - pip
+  - pip:
+      - ale-py
+      - gymnasium[atari]
+      - datasets

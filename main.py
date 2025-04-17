@@ -21,7 +21,7 @@ gym.register_envs(ale_py)
 
 REPO_PREFIX = "GymnasiumRecording__"
 
-class DatasetRecorder(gym.Wrapper):
+class DatasetRecorderWrapper(gym.Wrapper):
     """
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
     """
@@ -32,7 +32,7 @@ class DatasetRecorder(gym.Wrapper):
         self.frame_shape = self.observation_space.shape
 
         pygame.init()
-        self.screen = pygame.display.set_mode((self.frame_shape[1], self.frame_shape[0]))
+        self.screen = pygame.display.set_mode((self.frame_shape[1] * 2, self.frame_shape[0] * 2))
         pygame.display.set_caption(self.env._env_id)
 
         self.current_keys = set()
@@ -63,7 +63,8 @@ class DatasetRecorder(gym.Wrapper):
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
-        self.actions.append(list(action))
+        if type(action) is np.ndarray: action = int(''.join(map(str, action)), 2)
+        self.actions.append(action)
 
     def _input_loop(self):
         """
@@ -84,27 +85,27 @@ class DatasetRecorder(gym.Wrapper):
         with self.key_lock:
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
-                action = np.zeros(8, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
-                
+                action = np.zeros(9, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
+                #['B', None, 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A']
+
                 # @tsilva HACK: clean this up
                 for key in self.current_keys:
-                    if key == pygame.K_q:  # B (Run/Fireball)
+                    if key == pygame.K_z:  # A
                         action[0] = 1
-                    if key == pygame.K_w:  # B (Run/Fireball)
-                        action[1] = 1
-                    elif key == pygame.K_e:  # Start (Pause)
+                    if key == pygame.K_x:  # B
+                        action[8] = 1
+                    elif key == pygame.K_q:  # SELECT
                         action[2] = 1
-                    if key == pygame.K_r:  # B (Run/Fireball)
+                    if key == pygame.K_r:  # START
                         action[3] = 1
-                    elif key == pygame.K_t:    # Down (Crouch/Pipe)
+                    elif key == pygame.K_UP:  
                         action[4] = 1
-                    elif key == pygame.K_y:   # A (Jump)
+                    elif key == pygame.K_DOWN: 
                         action[5] = 1
-                    elif key == pygame.K_LEFT:    # Left
+                    elif key == pygame.K_LEFT:   
                         action[6] = 1
-                    elif key == pygame.K_RIGHT:   # Right
+                    elif key == pygame.K_RIGHT: 
                         action[7] = 1
-                print(action)
                 return action
             else:
                 # Atari: Discrete action space
@@ -113,16 +114,22 @@ class DatasetRecorder(gym.Wrapper):
                         return self.key_to_action[key]
                 return self.noop_action
 
-
-
     def _render_frame(self, frame):
         """
-        Render a frame using pygame.
+        Render a frame using pygame, scaled to 2x.
         """
-        if frame.dtype != np.uint8: frame = frame.astype(np.uint8)
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.uint8)
+        
         surface = pygame.surfarray.make_surface(frame.transpose(1, 0, 2))
-        self.screen.blit(surface, (0, 0))
+
+        # Scale the surface to 2x the original size
+        scaled_surface = pygame.transform.scale2x(surface)
+
+        # Update display with scaled frame
+        self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
+
 
     async def record(self, fps=30):
         self.recording = True
@@ -195,16 +202,19 @@ def env_id_to_hf_repo_id(env_id):
     return hf_repo_id
 
 def create_env(env_id):
-    if env_id in ['SuperMarioBros-Nes']:
+    if env_id.endswith("-Nes"):
         import retro
-        env = retro.make(game='SuperMarioBros-Nes', state='Level1-1', render_mode="rgb_array")
+        env = retro.make(game=env_id, render_mode="rgb_array") #state='Level1-1'
+        #env = JoypadSpace(env, [['NOOP'], ['A'], ['B'], ['up'], ['down'], ['left'], ['right'], ['select']])
+        #print(env.buttons)
+        #import sys
+        #sys.exit()
         env._env_id = env_id
         env._stable_retro = True
     else:
         env = gym.make(env_id, render_mode="rgb_array")
         env._env_id = env.spec.id.replace("-", "_")
     return env
-
 
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
@@ -216,21 +226,22 @@ async def main():
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
     try: loaded_dataset = load_dataset(hf_repo_id, split="train")
-    except: pass
-
-
+    except: loaded_dataset = None
 
     if args.mode == "record":
         env = create_env(env_id)
-        recorder = DatasetRecorder(env)
+        recorder = DatasetRecorderWrapper(env)
         recorded_dataset = await recorder.record(fps=args.fps)
         final_dataset = concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
         final_dataset.push_to_hub(hf_repo_id)
     elif args.mode == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         env = create_env(env_id)
-        recorder = DatasetRecorder(env)
+        recorder = DatasetRecorderWrapper(env)
         actions = loaded_dataset["action"]
+        # @tsilva HACK: clean this up
+        if hasattr(env, "_stable_retro") and env._stable_retro:
+            actions = np.array([np.array(list(map(int, f"{action:09b}"))) for action in actions])
         await recorder.replay(actions, fps=args.fps)
 
 if __name__ == "__main__":
