@@ -1,6 +1,5 @@
 
 import os
-import sys
 import time
 import numpy as np
 import pygame
@@ -8,7 +7,7 @@ import threading
 import asyncio
 import tempfile
 from PIL import Image as PILImage
-from datasets import Dataset, Features, Value, Image as HFImage, load_dataset
+from datasets import Dataset, Features, Value, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami
 import argparse
 from tqdm import tqdm
@@ -162,10 +161,6 @@ class AtariDatasetRecorder(gym.Wrapper):
         super().close()
 
 def env_id_to_hf_repo_id(env_id):
-    #if "NoFrameskip" not in env_id:
-    #    print("Error: Only NoFrameskip environments are supported.")
-    #    sys.exit(1)
-
     user_info = whoami()
     username = user_info.get("name") or user_info.get("user") or user_info.get("username")
     env_id_underscored = env_id.replace("-", "_").replace("/", "_")
@@ -181,17 +176,20 @@ async def main():
 
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
+    try: loaded_dataset = load_dataset(hf_repo_id, split="train")
+    except: pass
 
     if args.mode == "record":
         env = gym.make(env_id, render_mode="rgb_array")
         recorder = AtariDatasetRecorder(env)
-        dataset = await recorder.record(fps=args.fps)
-        dataset.push_to_hub(hf_repo_id)
+        recorded_dataset = await recorder.record(fps=args.fps)
+        final_dataset = concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
+        final_dataset.push_to_hub(hf_repo_id)
     elif args.mode == "playback":
+        assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         env = gym.make(env_id, render_mode="rgb_array")
         recorder = AtariDatasetRecorder(env)
-        dataset = load_dataset(hf_repo_id, split="train")
-        actions = dataset["action"]
+        actions = loaded_dataset["action"]
         await recorder.replay(actions, fps=args.fps)
 
 if __name__ == "__main__":

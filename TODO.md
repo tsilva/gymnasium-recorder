@@ -1,2 +1,2 @@
-- Append to existing dataset
 - Add gym-retro support
+- Add dataset streaming support
