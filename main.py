@@ -1,4 +1,4 @@
-
+import re
 import os
 import time
 import numpy as np
@@ -15,9 +15,7 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 load_dotenv()
 
-import ale_py
 import gymnasium as gym
-gym.register_envs(ale_py)
 
 REPO_PREFIX = "GymnasiumRecording__"
 
@@ -208,16 +206,20 @@ def env_id_to_hf_repo_id(env_id):
     return hf_repo_id
 
 def create_env(env_id):
-    if env_id.endswith("-Nes"):
+    # In case ROM is suffixed with platform name then use stable-retro
+    retro_platforms = {"Nes", "GameBoy", "Snes", "Atari2600", "Genesis"}
+    match = re.search(r"-(" + "|".join(retro_platforms) + r")$", env_id)
+    if match:
         import retro
-        env = retro.make(game=env_id, render_mode="rgb_array") #state='Level1-1'
-        #env = JoypadSpace(env, [['NOOP'], ['A'], ['B'], ['up'], ['down'], ['left'], ['right'], ['select']])
-        #print(env.buttons)
-        #import sys
-        #sys.exit()
+        #platform = match.group(1)
+        #game_name = env_id.replace(f"-{platform}", "")
+        env = retro.make(env_id, render_mode="rgb_array")
         env._env_id = env_id
         env._stable_retro = True
+    # Otherwise use ale_py
     else:
+        import ale_py
+        gym.register_envs(ale_py)
         env = gym.make(env_id, render_mode="rgb_array")
         env._env_id = env.spec.id.replace("-", "_")
     return env
