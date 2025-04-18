@@ -1,4 +1,6 @@
 - Add gym-retro support
     - Generalize action mapping (env.buttons)
+    - Store MultiBinary in dataset
+    - Add support for play without recording
 - Add dataset streaming support
 - Add auto dataset card generation

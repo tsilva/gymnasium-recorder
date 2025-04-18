@@ -92,8 +92,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 for key in self.current_keys:
                     if key == pygame.K_z:  # A
                         action[0] = 1
-                    if key == pygame.K_x:  # B
-                        action[8] = 1
                     elif key == pygame.K_q:  # SELECT
                         action[2] = 1
                     if key == pygame.K_r:  # START
@@ -106,6 +104,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
                         action[6] = 1
                     elif key == pygame.K_RIGHT: 
                         action[7] = 1
+                    if key == pygame.K_x:  # B
+                        action[8] = 1
+
+                #import numpy as np
+
+                #action[0] = 1
+                #action[7] = 1
+                #action[8] = 1
+
                 return action
             else:
                 # Atari: Discrete action space
@@ -129,7 +136,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
         # Update display with scaled frame
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
-
 
     async def record(self, fps=30):
         self.recording = True
