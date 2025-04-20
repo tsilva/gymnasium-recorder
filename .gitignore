@@ -172,7 +172,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-videos/
-datasets/
-roms/
-Nintendo*/
+_vizdoom.ini
+_vizdoom/*

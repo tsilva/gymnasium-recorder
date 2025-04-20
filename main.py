@@ -27,11 +27,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
         super().__init__(env)
 
         self.recording = False
-        self.frame_shape = self.observation_space.shape
+        self.frame_shape = None  # Delay initialization
+        self.screen = None       # Delay initialization
 
         pygame.init()
-        self.screen = pygame.display.set_mode((self.frame_shape[1] * 2, self.frame_shape[0] * 2))
-        pygame.display.set_caption(self.env._env_id)
+        # pygame.display.set_caption will be set after env_id is available
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
@@ -50,11 +50,33 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.temp_dir = tempfile.mkdtemp()
 
+    def _ensure_screen(self, frame):
+        """
+        Ensure pygame screen is initialized with the correct shape.
+        """
+        # If frame is a dict (e.g., VizDoom), extract the image
+        if isinstance(frame, dict):
+            # Try common keys for image observation
+            for k in ["obs", "image", "screen"]:
+                if k in frame:
+                    frame = frame[k]
+                    break
+        if self.screen is None or self.frame_shape is None:
+            self.frame_shape = frame.shape
+            self.screen = pygame.display.set_mode((self.frame_shape[1] * 2, self.frame_shape[0] * 2))
+            pygame.display.set_caption(getattr(self.env, "_env_id", "Gymnasium Recorder"))
+
     def _record_frame(self, episode_id, step, frame, action):
         """
         Save a frame and action to temporary storage.
         """
         if not self.recording: return
+        # If frame is a dict (e.g., VizDoom), extract the image
+        if isinstance(frame, dict):
+            for k in ["obs", "image", "screen"]:
+                if k in frame:
+                    frame = frame[k]
+                    break
         img = PILImage.fromarray(frame.astype(np.uint8))
         path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
         img.save(path, format="PNG")
@@ -78,9 +100,41 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
     def _get_user_action(self):
         """
-        Map pressed keys to actions, handling both Atari (Discrete) and stable-retro (MultiBinary) environments.
+        Map pressed keys to actions, handling Atari (Discrete), stable-retro (MultiBinary), and VizDoom (MultiBinary) environments.
         """
         with self.key_lock:
+            if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
+                n_buttons=self.env.action_space.n
+                action = np.zeros(10, dtype=np.int32)
+                keymap = {
+                    pygame.K_UP: 4,   # ATTACK
+                    pygame.K_LEFT: 0,    # MOVE_LEFT
+                    pygame.K_SPACE: 1,   # MOVE_RIGHT
+                    pygame.K_DOWN: 3,   # MOVE_RIGHT
+                    pygame.K_z: 0,   # MOVE_RIGHT
+                    pygame.K_x: 5,   # MOVE_RIGHT
+                    pygame.K_c: 6,   # MOVE_RIGHT
+                    pygame.K_v: 7   # MOVE_RIGHT
+                    #pygame.K_a: 8,   # MOVE_RIGHT
+                }
+
+                for key, idx in keymap.items():
+                    if key in self.current_keys and idx < n_buttons:
+                        action[idx] = 1
+                action = reversed(action)
+
+                def _multibinary_to_discrete(action):
+                    """Convert a list of binary values to a discrete integer."""
+                    return int("".join(str(bit) for bit in action), 2)
+                
+                def _discrete_to_multibinary(value, length):
+                    """Convert an integer to a list of binary values of fixed length."""
+                    return [int(b) for b in format(value, f'0{length}b')]
+
+                action = _multibinary_to_discrete(action)
+                print(action)
+                return action
+            # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
                 action = np.zeros(9, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
@@ -123,6 +177,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         Render a frame using pygame, scaled to 2x.
         """
+        # If frame is a dict (e.g., VizDoom), extract the image
+        if isinstance(frame, dict):
+            for k in ["obs", "image", "screen"]:
+                if k in frame:
+                    frame = frame[k]
+                    break
+        self._ensure_screen(frame)
         if frame.dtype != np.uint8:
             frame = frame.astype(np.uint8)
         
@@ -168,6 +229,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         episode_id = int(time.time())
         obs, _ = self.env.reset()
+        self._ensure_screen(obs)  # Ensure pygame window is created after first obs
         done = False
         step = 0
         while not done:
@@ -184,6 +246,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
     async def replay(self, actions, fps=30):
         clock = pygame.time.Clock()
         obs, _ = self.env.reset()
+        self._ensure_screen(obs)
         self._render_frame(obs)
         for action in tqdm(actions):
             obs, _, _, _, _ = self.env.step(action)
@@ -214,21 +277,47 @@ def create_env(env_id):
         #platform = match.group(1)
         #game_name = env_id.replace(f"-{platform}", "")
         env = retro.make(env_id, render_mode="rgb_array")
-        env._env_id = env_id
         env._stable_retro = True
+    elif "Vizdoom" in env_id:
+        from vizdoom import gymnasium_wrapper
+        env = gym.make(env_id, render_mode="rgb_array")
+        env._vizdoom = True
     # Otherwise use ale_py
     else:
         import ale_py
         gym.register_envs(ale_py)
         env = gym.make(env_id, render_mode="rgb_array")
-        env._env_id = env.spec.id.replace("-", "_")
+    
+    env._env_id = env_id.replace("-", "_")
     return env
+
+def get_default_fps(env_id):
+    """
+    Return a sensible default FPS for the given environment.
+    """
+    # NES and most retro consoles: 60 FPS
+    retro_platforms_60fps = {"Nes", "GameBoy", "Snes", "Genesis"}
+    # Atari 2600: 60 FPS (but Gymnasium ALE often uses 15 or 30 for human play)
+    if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps):
+        return 60
+    if "Atari2600" in env_id:
+        return 60
+    # Gymnasium ALE Atari: 15 FPS is common for human play
+    if "NoFrameskip" in env_id or "ALE" in env_id or env_id.lower() in [
+        "breakout", "pong", "spaceinvaders", "seaquest", "qbert", "ms_pacman"
+    ]:
+        return 15
+    # VizDoom: 35 FPS is the engine's default
+    if "Vizdoom" in env_id or "vizdoom" in env_id:
+        return 35
+    # Default fallback
+    return 15
 
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
     parser.add_argument("mode", type=str, choices=["record", "playback"], help="Mode of operation: 'record' or 'playback'")
     parser.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
-    parser.add_argument("--fps", type=int, default=15, help="Frames per second for playback")
+    parser.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
     args = parser.parse_args()
 
     env_id = args.env_id
@@ -236,10 +325,13 @@ async def main():
     try: loaded_dataset = load_dataset(hf_repo_id, split="train")
     except: loaded_dataset = None
 
+    # Determine FPS: use user value if set, otherwise use default for env
+    fps = args.fps if args.fps is not None else get_default_fps(env_id)
+
     if args.mode == "record":
         env = create_env(env_id)
         recorder = DatasetRecorderWrapper(env)
-        recorded_dataset = await recorder.record(fps=args.fps)
+        recorded_dataset = await recorder.record(fps=fps)
         final_dataset = concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
         final_dataset.push_to_hub(hf_repo_id)
     elif args.mode == "playback":
@@ -250,7 +342,7 @@ async def main():
         # @tsilva HACK: clean this up
         if hasattr(env, "_stable_retro") and env._stable_retro:
             actions = np.array([np.array(list(map(int, f"{action:09b}"))) for action in actions])
-        await recorder.replay(actions, fps=args.fps)
+        await recorder.replay(actions, fps=fps)
 
 if __name__ == "__main__":
     asyncio.run(main())
