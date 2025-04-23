@@ -174,3 +174,4 @@ cython_debug/
 .pypirc
 _vizdoom.ini
 _vizdoom/*
+roms/
