@@ -71,19 +71,21 @@ class DatasetRecorderWrapper(gym.Wrapper):
         Save a frame and action to temporary storage.
         """
         if not self.recording: return
+
         # If frame is a dict (e.g., VizDoom), extract the image
         if isinstance(frame, dict):
             for k in ["obs", "image", "screen"]:
                 if k in frame:
                     frame = frame[k]
                     break
+
         img = PILImage.fromarray(frame.astype(np.uint8))
         path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
         img.save(path, format="PNG")
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
-        if type(action) is np.ndarray: action = int(''.join(map(str, action)), 2)
+        #if type(action) is np.ndarray: action = int(''.join(map(str, action)), 2)
         self.actions.append(action)
 
     def _input_loop(self):
@@ -137,7 +139,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
-                action = np.zeros(9, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
+                action = np.zeros(self.env.action_space.n, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
                 #['B', None, 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A']
 
                 # @tsilva HACK: clean this up
