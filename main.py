@@ -7,7 +7,7 @@ import threading
 import asyncio
 import tempfile
 from PIL import Image as PILImage
-from datasets import Dataset, Features, Value, Image as HFImage, load_dataset, concatenate_datasets
+from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami
 import argparse
 from tqdm import tqdm
@@ -207,7 +207,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.recording = True
         try: 
             await self.play(fps=fps)
-            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64"), "action": Value("int64")})
+            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64"), "action": Sequence(Value("int64"))})
             data = {"episode_id" : self.episode_ids, "image": self.frames, "step" : self.steps, "action": self.actions}
             dataset = Dataset.from_dict(data, features=features)
             return dataset
@@ -232,6 +232,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         episode_id = int(time.time())
         obs, _ = self.env.reset()
         self._ensure_screen(obs)  # Ensure pygame window is created after first obs
+        self._render_frame(obs)
         done = False
         step = 0
         while not done:
@@ -341,9 +342,6 @@ async def main():
         env = create_env(env_id)
         recorder = DatasetRecorderWrapper(env)
         actions = loaded_dataset["action"]
-        # @tsilva HACK: clean this up
-        if hasattr(env, "_stable_retro") and env._stable_retro:
-            actions = np.array([np.array(list(map(int, f"{action:09b}"))) for action in actions])
         await recorder.replay(actions, fps=fps)
 
 if __name__ == "__main__":
