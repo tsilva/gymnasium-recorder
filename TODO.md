@@ -5,5 +5,6 @@
 - Add vizdoom support
     - Fix action mapping
     - Add wad support (eg: Doom1/Doom2)
+- Add minigrid support (https://minigrid.farama.org/)
 - Add dataset streaming support
 - Add auto dataset card generation
