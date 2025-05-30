@@ -63,7 +63,7 @@ recorder = DatasetRecorderWrapper(env)
 custom_keymap = {
     pygame.K_a: 0,     # MOVE_LEFT
     pygame.K_d: 1,     # MOVE_RIGHT
-    pygame.K_SPACE: 4  # ATTACK
+    pygame.K_SPACE: 3  # ATTACK
 }
 recorder.set_vizdoom_keymap(custom_keymap)
 
@@ -72,12 +72,12 @@ await recorder.record(fps=30)
 ```
 
 Default VizDoom key mappings:
-- Space Bar: ATTACK (action 4)
+- Space Bar: ATTACK (action 3)
 - Left Arrow: MOVE_LEFT (action 0)
 - Right Arrow: MOVE_RIGHT (action 1) 
 - Up Arrow: MOVE_FORWARD (action 2)
-- Down Arrow: MOVE_BACKWARD (action 3)
-- Z, X, C: Additional actions
+- Down Arrow: ATTACK (action 3, same as Space)
+- Z, X, C: Alternative movement keys
 
 ## 📄 License
 

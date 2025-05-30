@@ -61,14 +61,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
     def _init_vizdoom_mapping(self):
         """Initialize key mappings for VizDoom environments."""
         self.vizdoom_keymap = {
-            pygame.K_SPACE: 4,  # ATTACK
-            pygame.K_LEFT: 0,   # MOVE_LEFT
-            pygame.K_RIGHT: 1,  # MOVE_RIGHT
-            pygame.K_UP: 2,     # MOVE_FORWARD
-            pygame.K_DOWN: 3,   # MOVE_BACKWARD
-            pygame.K_z: 5,      # ACTION_5
-            pygame.K_x: 6,      # ACTION_6
-            pygame.K_c: 7       # ACTION_7
+            pygame.K_SPACE: 3,  # ATTACK (action 3)
+            pygame.K_LEFT: 0,   # MOVE_LEFT (action 0)
+            pygame.K_RIGHT: 1,  # MOVE_RIGHT (action 1)
+            pygame.K_UP: 2,     # MOVE_FORWARD (action 2)
+            # Additional keys only if action space allows it
+            pygame.K_DOWN: 3,   # Same as ATTACK - fallback
+            pygame.K_z: 0,      # Alternative for MOVE_LEFT
+            pygame.K_x: 1,      # Alternative for MOVE_RIGHT
+            pygame.K_c: 2       # Alternative for MOVE_FORWARD
         }
         
     def _init_stable_retro_mapping(self):
@@ -132,24 +133,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
                 n_buttons = self.env.action_space.n
-                action = np.zeros(10, dtype=np.int32)
-                
-                for key, idx in self.vizdoom_keymap.items():
-                    if key in self.current_keys and idx < n_buttons:
-                        action[idx] = 1
-                action = reversed(action)
-
-                def _multibinary_to_discrete(action):
-                    """Convert a list of binary values to a discrete integer."""
-                    return int("".join(str(bit) for bit in action), 2)
-                
-                def _discrete_to_multibinary(value, length):
-                    """Convert an integer to a list of binary values of fixed length."""
-                    return [int(b) for b in format(value, f'0{length}b')]
-
-                action = _multibinary_to_discrete(action)
-                print(action)
-                return action
+                # Check for key presses in priority order
+                for key in self.current_keys:
+                    if key in self.vizdoom_keymap:
+                        action_idx = self.vizdoom_keymap[key]
+                        # Ensure the action is within the valid range
+                        if action_idx < n_buttons:
+                            return action_idx
+                # Return no-op action (0) if no valid key is pressed
+                return 0
             # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
