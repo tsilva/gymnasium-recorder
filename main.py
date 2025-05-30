@@ -35,6 +35,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
+        
+        # Default Atari key mapping
         self.key_to_action = {
             pygame.K_UP: 1,
             pygame.K_RIGHT: 2,
@@ -42,13 +44,37 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.K_DOWN: 4
         }
         self.noop_action = 0
-
+        
+        # Initialize environment-specific key mappings
+        if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
+            self._init_vizdoom_mapping()
+        elif hasattr(self.env, '_stable_retro') and self.env._stable_retro:
+            self._init_stable_retro_mapping()
+            
         self.episode_ids = []
         self.frames = []
         self.actions = []
         self.steps = []
 
         self.temp_dir = tempfile.mkdtemp()
+        
+    def _init_vizdoom_mapping(self):
+        """Initialize key mappings for VizDoom environments."""
+        self.vizdoom_keymap = {
+            pygame.K_SPACE: 3,  # ATTACK (action 3)
+            pygame.K_LEFT: 0,   # MOVE_LEFT (action 0)
+            pygame.K_RIGHT: 3,  # ATTACK (action 3)
+            pygame.K_UP: 1,     # MOVE_RIGHT (action 1)
+            pygame.K_DOWN: 0,   # MOVE_LEFT (action 0)
+            # Additional keys only if action space allows it
+            pygame.K_z: 0,      # Alternative for MOVE_LEFT
+            pygame.K_x: 1,      # Alternative for MOVE_RIGHT
+            pygame.K_c: 2       # Alternative for MOVE_FORWARD
+        }
+        
+    def _init_stable_retro_mapping(self):
+        """Initialize key mappings for stable-retro environments."""
+        # No need to store a map here, as the stable-retro section uses direct button assignments
 
     def _ensure_screen(self, frame):
         """
@@ -106,36 +132,16 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                n_buttons=self.env.action_space.n
-                action = np.zeros(10, dtype=np.int32)
-                keymap = {
-                    pygame.K_UP: 4,   # ATTACK
-                    pygame.K_LEFT: 0,    # MOVE_LEFT
-                    pygame.K_SPACE: 1,   # MOVE_RIGHT
-                    pygame.K_DOWN: 3,   # MOVE_RIGHT
-                    pygame.K_z: 0,   # MOVE_RIGHT
-                    pygame.K_x: 5,   # MOVE_RIGHT
-                    pygame.K_c: 6,   # MOVE_RIGHT
-                    pygame.K_v: 7   # MOVE_RIGHT
-                    #pygame.K_a: 8,   # MOVE_RIGHT
-                }
-
-                for key, idx in keymap.items():
-                    if key in self.current_keys and idx < n_buttons:
-                        action[idx] = 1
-                action = reversed(action)
-
-                def _multibinary_to_discrete(action):
-                    """Convert a list of binary values to a discrete integer."""
-                    return int("".join(str(bit) for bit in action), 2)
-                
-                def _discrete_to_multibinary(value, length):
-                    """Convert an integer to a list of binary values of fixed length."""
-                    return [int(b) for b in format(value, f'0{length}b')]
-
-                action = _multibinary_to_discrete(action)
-                print(action)
-                return action
+                n_buttons = self.env.action_space.n
+                # Check for key presses in priority order
+                for key in self.current_keys:
+                    if key in self.vizdoom_keymap:
+                        action_idx = self.vizdoom_keymap[key]
+                        # Ensure the action is within the valid range
+                        if action_idx < n_buttons:
+                            return action_idx
+                # Return no-op action (0) if no valid key is pressed
+                return 0
             # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
@@ -198,6 +204,24 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
 
+    def set_vizdoom_keymap(self, keymap):
+        """
+        Set custom key mapping for VizDoom environments.
+        
+        Args:
+            keymap: Dictionary mapping pygame key constants to action indices
+        """
+        if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
+            self.vizdoom_keymap.update(keymap)
+        else:
+            print("Warning: Trying to set VizDoom keymap on a non-VizDoom environment")
+            
+    def get_vizdoom_keymap(self):
+        """Get the current VizDoom key mapping."""
+        if hasattr(self, 'vizdoom_keymap'):
+            return self.vizdoom_keymap
+        return {}
+            
     async def record(self, fps=30):
         self.recording = True
         try: return await self._record(fps=fps)

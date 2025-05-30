@@ -51,6 +51,34 @@ python main.py playback BreakoutNoFrameskip-v4
 
 This will replay a previously recorded session from Hugging Face Hub, allowing you to verify the environment's deterministic behavior.
 
+### Customizing Key Mappings
+
+For VizDoom environments, you can customize the key mappings using the `set_vizdoom_keymap` method:
+
+```python
+env = create_env("VizdoomBasic-v0")
+recorder = DatasetRecorderWrapper(env)
+
+# Customize key mappings
+custom_keymap = {
+    pygame.K_a: 0,     # MOVE_LEFT
+    pygame.K_d: 1,     # MOVE_RIGHT
+    pygame.K_SPACE: 3  # ATTACK
+}
+recorder.set_vizdoom_keymap(custom_keymap)
+
+# Start recording with custom keys
+await recorder.record(fps=30)
+```
+
+Default VizDoom key mappings:
+- Space Bar: ATTACK (action 3)
+- Left Arrow: MOVE_LEFT (action 0)
+- Right Arrow: ATTACK (action 3)
+- Up Arrow: MOVE_RIGHT (action 1)
+- Down Arrow: MOVE_LEFT (action 0)
+- Z, X, C: Alternative movement keys
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
