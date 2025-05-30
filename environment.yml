@@ -13,4 +13,5 @@ dependencies:
       - vizdoom
       - ale-py
       - gymnasium[atari]
+      - gymnasium[vizdoom]
       - datasets
