@@ -63,10 +63,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.vizdoom_keymap = {
             pygame.K_SPACE: 3,  # ATTACK (action 3)
             pygame.K_LEFT: 0,   # MOVE_LEFT (action 0)
-            pygame.K_RIGHT: 1,  # MOVE_RIGHT (action 1)
-            pygame.K_UP: 2,     # MOVE_FORWARD (action 2)
+            pygame.K_RIGHT: 3,  # ATTACK (action 3)
+            pygame.K_UP: 1,     # MOVE_RIGHT (action 1)
+            pygame.K_DOWN: 0,   # MOVE_LEFT (action 0)
             # Additional keys only if action space allows it
-            pygame.K_DOWN: 3,   # Same as ATTACK - fallback
             pygame.K_z: 0,      # Alternative for MOVE_LEFT
             pygame.K_x: 1,      # Alternative for MOVE_RIGHT
             pygame.K_c: 2       # Alternative for MOVE_FORWARD

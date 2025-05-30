@@ -74,9 +74,9 @@ await recorder.record(fps=30)
 Default VizDoom key mappings:
 - Space Bar: ATTACK (action 3)
 - Left Arrow: MOVE_LEFT (action 0)
-- Right Arrow: MOVE_RIGHT (action 1) 
-- Up Arrow: MOVE_FORWARD (action 2)
-- Down Arrow: ATTACK (action 3, same as Space)
+- Right Arrow: ATTACK (action 3)
+- Up Arrow: MOVE_RIGHT (action 1)
+- Down Arrow: MOVE_LEFT (action 0)
 - Z, X, C: Alternative movement keys
 
 ## 📄 License
