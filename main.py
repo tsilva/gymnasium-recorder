@@ -35,6 +35,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
+        
+        # Default Atari key mapping
         self.key_to_action = {
             pygame.K_UP: 1,
             pygame.K_RIGHT: 2,
@@ -42,13 +44,36 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.K_DOWN: 4
         }
         self.noop_action = 0
-
+        
+        # Initialize environment-specific key mappings
+        if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
+            self._init_vizdoom_mapping()
+        elif hasattr(self.env, '_stable_retro') and self.env._stable_retro:
+            self._init_stable_retro_mapping()
+            
         self.episode_ids = []
         self.frames = []
         self.actions = []
         self.steps = []
 
         self.temp_dir = tempfile.mkdtemp()
+        
+    def _init_vizdoom_mapping(self):
+        """Initialize key mappings for VizDoom environments."""
+        self.vizdoom_keymap = {
+            pygame.K_UP: 4,     # ATTACK
+            pygame.K_LEFT: 0,   # MOVE_LEFT
+            pygame.K_SPACE: 1,  # MOVE_RIGHT
+            pygame.K_DOWN: 3,   # MOVE_BACKWARD
+            pygame.K_z: 0,      # MOVE_LEFT (alternative)
+            pygame.K_x: 5,      # ACTION_5
+            pygame.K_c: 6,      # ACTION_6
+            pygame.K_v: 7       # ACTION_7
+        }
+        
+    def _init_stable_retro_mapping(self):
+        """Initialize key mappings for stable-retro environments."""
+        # No need to store a map here, as the stable-retro section uses direct button assignments
 
     def _ensure_screen(self, frame):
         """
@@ -106,21 +131,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                n_buttons=self.env.action_space.n
+                n_buttons = self.env.action_space.n
                 action = np.zeros(10, dtype=np.int32)
-                keymap = {
-                    pygame.K_UP: 4,   # ATTACK
-                    pygame.K_LEFT: 0,    # MOVE_LEFT
-                    pygame.K_SPACE: 1,   # MOVE_RIGHT
-                    pygame.K_DOWN: 3,   # MOVE_RIGHT
-                    pygame.K_z: 0,   # MOVE_RIGHT
-                    pygame.K_x: 5,   # MOVE_RIGHT
-                    pygame.K_c: 6,   # MOVE_RIGHT
-                    pygame.K_v: 7   # MOVE_RIGHT
-                    #pygame.K_a: 8,   # MOVE_RIGHT
-                }
-
-                for key, idx in keymap.items():
+                
+                for key, idx in self.vizdoom_keymap.items():
                     if key in self.current_keys and idx < n_buttons:
                         action[idx] = 1
                 action = reversed(action)
@@ -198,6 +212,24 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
 
+    def set_vizdoom_keymap(self, keymap):
+        """
+        Set custom key mapping for VizDoom environments.
+        
+        Args:
+            keymap: Dictionary mapping pygame key constants to action indices
+        """
+        if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
+            self.vizdoom_keymap.update(keymap)
+        else:
+            print("Warning: Trying to set VizDoom keymap on a non-VizDoom environment")
+            
+    def get_vizdoom_keymap(self):
+        """Get the current VizDoom key mapping."""
+        if hasattr(self, 'vizdoom_keymap'):
+            return self.vizdoom_keymap
+        return {}
+            
     async def record(self, fps=30):
         self.recording = True
         try: return await self._record(fps=fps)
