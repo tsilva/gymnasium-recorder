@@ -61,14 +61,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
     def _init_vizdoom_mapping(self):
         """Initialize key mappings for VizDoom environments."""
         self.vizdoom_keymap = {
-            pygame.K_UP: 4,     # ATTACK
+            pygame.K_SPACE: 4,  # ATTACK
             pygame.K_LEFT: 0,   # MOVE_LEFT
-            pygame.K_SPACE: 1,  # MOVE_RIGHT
+            pygame.K_RIGHT: 1,  # MOVE_RIGHT
+            pygame.K_UP: 2,     # MOVE_FORWARD
             pygame.K_DOWN: 3,   # MOVE_BACKWARD
-            pygame.K_z: 0,      # MOVE_LEFT (alternative)
-            pygame.K_x: 5,      # ACTION_5
-            pygame.K_c: 6,      # ACTION_6
-            pygame.K_v: 7       # ACTION_7
+            pygame.K_z: 5,      # ACTION_5
+            pygame.K_x: 6,      # ACTION_6
+            pygame.K_c: 7       # ACTION_7
         }
         
     def _init_stable_retro_mapping(self):
