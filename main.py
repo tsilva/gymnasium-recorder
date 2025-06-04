@@ -371,8 +371,18 @@ async def main():
 
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
-    try: loaded_dataset = load_dataset(hf_repo_id, split="train")
-    except: loaded_dataset = None
+    try:
+        loaded_dataset = load_dataset(hf_repo_id, split="train")
+        # older versions stored actions as integers; normalize to list format
+        if isinstance(loaded_dataset.features["action"], Value):
+            loaded_dataset = loaded_dataset.map(
+                lambda row: {"action": [row["action"]]}
+            )
+            loaded_dataset = loaded_dataset.cast_column(
+                "action", Sequence(Value("int64"))
+            )
+    except Exception:
+        loaded_dataset = None
 
     # Determine FPS: use user value if set, otherwise use default for env
     fps = args.fps if args.fps is not None else get_default_fps(env_id)
