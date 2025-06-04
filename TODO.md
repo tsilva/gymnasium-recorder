@@ -1,3 +1,2 @@
 - Add Doom WAD support
 - Add validation for dataset fields
-- BUG: "env_id" is being uploaded as "unknown", consider not uploading and just setting it in dataset card
