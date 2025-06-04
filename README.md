@@ -71,7 +71,8 @@ This will replay a previously recorded session from Hugging Face Hub, allowing y
 python main.py list_environments
 ```
 
-This will print all Atari, stable-retro and VizDoom environments detected on your system.
+This will print all Atari environments, all stable-retro games with ROM availability
+indicated, and any VizDoom environments found (including WADs if present).
 
 ## 📄 License
 

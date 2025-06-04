@@ -567,7 +567,9 @@ def list_environments():
         import ale_py
         gym.register_envs(ale_py)
         atari_ids = sorted(
-            env_id for env_id in gym.envs.registry.keys() if env_id.startswith("ALE/")
+            env_id
+            for env_id in gym.envs.registry.keys()
+            if str(gym.spec(env_id).entry_point) == "ale_py.env:AtariEnv"
         )
         for env_id in atari_ids:
             print(env_id)
@@ -576,15 +578,17 @@ def list_environments():
 
     try:
         import retro
-        games = sorted(retro.data.list_games())
-        if games:
+        all_games = sorted(retro.data.list_games(retro.data.Integrations.ALL))
+        if all_games:
             print("\n=== Stable-Retro Games ===")
-            for game in games:
-                print(game)
+            for game in all_games:
+                available = retro.data.get_file_path(game, "rom.sha") is not None
+                status = "(imported)" if available else "(missing ROM)"
+                print(f"{game} {status}")
         else:
-            print("\nStable-Retro installed but no ROMs imported.")
-    except Exception:
-        print("\nStable-Retro not installed.")
+            print("\nStable-Retro package installed but no games found.")
+    except Exception as e:
+        print(f"\nStable-Retro not installed: {e}")
 
     try:
         import vizdoom
