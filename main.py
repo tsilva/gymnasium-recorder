@@ -215,6 +215,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.key_lock = threading.Lock()
         self.key_to_action = ATARI_KEY_BINDINGS
         self._vizdoom_buttons = None
+        self._vizdoom_vector_map = None
         self.noop_action = 0
 
         self.episode_ids = []
@@ -262,6 +263,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
         # Normalize action format for dataset storage
         if isinstance(action, np.ndarray):
             action = action.tolist()
+        elif isinstance(action, dict):
+            action = {
+                k: (v.tolist() if isinstance(v, np.ndarray) else v)
+                for k, v in action.items()
+            }
         else:
             action = [int(action)]
         self.actions.append(action)
@@ -285,9 +291,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
     def _init_vizdoom_key_mapping(self):
         """Map important action names to their button indices."""
         available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
+        offset = self.env.unwrapped.num_delta_buttons
 
         def idx(name):
-            return available.index(name) if name in available else None
+            if name in available:
+                return available.index(name) - offset
+            return None
 
         mapping = {
             "ATTACK": idx("ATTACK"),
@@ -303,6 +312,17 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         for i in range(1, 8):
             mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
+
+        # Precompute vector -> discrete action mapping for faster lookup
+        space = self.env.action_space
+        if isinstance(space, gym.spaces.Dict):
+            space = space.get("binary")
+        if isinstance(space, gym.spaces.Discrete):
+            self._vizdoom_vector_map = {
+                tuple(combo): i for i, combo in enumerate(self.env.unwrapped.button_map)
+            }
+        else:
+            self._vizdoom_vector_map = None
 
         return {k: v for k, v in mapping.items() if v is not None}
 
@@ -337,11 +357,34 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 else:
                     press(name)
 
-        if isinstance(self.env.action_space, gym.spaces.Discrete):
-            for i, combo in enumerate(self.env.unwrapped.button_map):
-                if np.array_equal(combo, action):
-                    return i
-            return 0
+        space = self.env.action_space
+        # When the action space contains both binary and continuous components
+        # (e.g. Dict["binary", "continuous"]), build the appropriate dict
+        if isinstance(space, gym.spaces.Dict):
+            binary_space = space.get("binary")
+            continuous_space = space.get("continuous")
+            if isinstance(binary_space, gym.spaces.Discrete):
+                if self._vizdoom_vector_map is None:
+                    self._vizdoom_vector_map = {
+                        tuple(c): i for i, c in enumerate(self.env.unwrapped.button_map)
+                    }
+                binary_action = self._vizdoom_vector_map.get(tuple(action), 0)
+            else:
+                binary_action = action
+
+            if continuous_space is not None:
+                cont_shape = continuous_space.shape
+                continuous_action = np.zeros(cont_shape, dtype=np.float32)
+                return {"binary": binary_action, "continuous": continuous_action}
+            return {"binary": binary_action}
+
+        if isinstance(space, gym.spaces.Discrete):
+            if self._vizdoom_vector_map is None:
+                self._vizdoom_vector_map = {
+                    tuple(c): i for i, c in enumerate(self.env.unwrapped.button_map)
+                }
+            return self._vizdoom_vector_map.get(tuple(action), 0)
+
         return action
 
     def _get_stable_retro_action(self):
@@ -399,9 +442,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.recording = True
         try:
             await self.play(fps=fps)
-            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64"), "action": Sequence(Value("int64"))})
-            data = {"episode_id" : self.episode_ids, "image": self.frames, "step" : self.steps, "action": self.actions}
-            dataset = Dataset.from_dict(data, features=features)
+            data = {
+                "episode_id": self.episode_ids,
+                "image": self.frames,
+                "step": self.steps,
+                "action": self.actions,
+            }
+            dataset = Dataset.from_dict(data)
+            dataset = dataset.cast_column("image", HFImage())
             return dataset
         finally: 
             self.recording = False
@@ -450,13 +498,27 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._ensure_screen(obs)
         self._render_frame(obs)
         for action in tqdm(actions):
-            # Actions may be stored as lists in the dataset, convert back to the
-            # environment's expected format
+            # Convert stored actions back to the environment's expected format
             if isinstance(action, list):
                 if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
                     action = action[0]
                 else:
                     action = np.array(action, dtype=np.int32)
+            elif isinstance(action, dict):
+                new_action = {}
+                space = self.env.action_space
+                if isinstance(space, gym.spaces.Dict):
+                    for k, v in action.items():
+                        sub = space[k]
+                        if isinstance(v, list):
+                            new_action[k] = np.array(v, dtype=sub.dtype)
+                        else:
+                            new_action[k] = v
+                    action = new_action
+                else:
+                    for k, v in action.items():
+                        new_action[k] = np.array(v) if isinstance(v, list) else v
+                    action = new_action
             obs, _, _, _, _ = self.env.step(action)
             self._render_frame(obs)
             clock.tick(fps)
