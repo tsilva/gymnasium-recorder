@@ -6,9 +6,8 @@ import pygame
 import threading
 import asyncio
 import tempfile
-from typing import Optional
-from PIL import Image as PILImage
-from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
+import cv2
+from datasets import Dataset, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
 from tqdm import tqdm
@@ -224,6 +223,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.frames = []
         self.actions = []
         self.steps = []
+        self.env_ids = []
+        self.timestamps = []
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -256,12 +257,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     frame = frame[k]
                     break
 
-        img = PILImage.fromarray(frame.astype(np.uint8))
-        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
-        img.save(path, format="PNG")
+        frame_uint8 = frame.astype(np.uint8)
+        frame_bgr = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2BGR)
+        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.jpg")
+        cv2.imwrite(path, frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
+        self.env_ids.append(self.env.spec.id if self.env and self.env.spec else "unknown")
+        self.timestamps.append(time.time())
         # Normalize action format for dataset storage
         if isinstance(action, np.ndarray):
             action = action.tolist()
@@ -477,6 +481,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
             await self.play(fps=fps)
             data = {
                 "episode_id": self.episode_ids,
+                "env_id": self.env_ids,
+                "timestamp": self.timestamps,
                 "image": self.frames,
                 "step": self.steps,
                 "action": self.actions,
@@ -505,6 +511,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.frames.clear()
         self.actions.clear()
         self.steps.clear()
+        self.env_ids.clear()
+        self.timestamps.clear()
 
         episode_id = int(time.time())
         obs, _ = self.env.reset()
