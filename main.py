@@ -86,7 +86,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
-        #if type(action) is np.ndarray: action = int(''.join(map(str, action)), 2)
+        # Normalize action format for dataset storage
+        if isinstance(action, np.ndarray):
+            action = action.tolist()
+        else:
+            action = [int(action)]
         self.actions.append(action)
 
     def _input_loop(self):
@@ -286,6 +290,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._ensure_screen(obs)
         self._render_frame(obs)
         for action in tqdm(actions):
+            # Actions may be stored as lists in the dataset, convert back to the
+            # environment's expected format
+            if isinstance(action, list):
+                if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
+                    action = action[0]
+                else:
+                    action = np.array(action, dtype=np.int32)
             obs, _, _, _, _ = self.env.step(action)
             self._render_frame(obs)
             clock.tick(fps)
