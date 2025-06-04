@@ -41,6 +41,10 @@ This will open a pygame window where you can play Breakout. Use the following co
 - Right Arrow: Action 2
 - Left Arrow: Action 3
 
+For VizDoom environments the keys are mapped automatically so that:
+- Cursor arrows move/turn the agent (depending on the scenario)
+- Spacebar triggers the `ATTACK`/`USE` action if available
+
 The session will be automatically saved as a dataset and uploaded to Hugging Face Hub if you've provided a token.
 
 ### Replaying a recorded session
