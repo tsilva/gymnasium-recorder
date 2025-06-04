@@ -106,8 +106,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                n_buttons=self.env.action_space.n
-                action = np.zeros(10, dtype=np.int32)
+                n_buttons = self.env.action_space.n
+                action = np.zeros(n_buttons, dtype=np.int32)
                 keymap = {
                     pygame.K_UP: 4,   # ATTACK
                     pygame.K_LEFT: 0,    # MOVE_LEFT
@@ -123,7 +123,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 for key, idx in keymap.items():
                     if key in self.current_keys and idx < n_buttons:
                         action[idx] = 1
-                action = reversed(action)
+                action = action[::-1]
 
                 def _multibinary_to_discrete(action):
                     """Convert a list of binary values to a discrete integer."""
@@ -134,7 +134,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     return [int(b) for b in format(value, f'0{length}b')]
 
                 action = _multibinary_to_discrete(action)
-                print(action)
                 return action
             # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
