@@ -8,7 +8,7 @@ import asyncio
 import tempfile
 from PIL import Image as PILImage
 from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
-from huggingface_hub import whoami
+from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
 from tqdm import tqdm
 
@@ -538,6 +538,58 @@ def env_id_to_hf_repo_id(env_id):
     hf_repo_id = f"{username}/{REPO_PREFIX}{env_id_underscored}"
     return hf_repo_id
 
+
+def generate_dataset_card(dataset, env_id, repo_id):
+    """Generate or update the dataset card for a given dataset repo."""
+
+    # Dataset statistics
+    frames = len(dataset)
+    episodes = len(set(dataset["episode_id"]))
+
+    structure_lines = []
+    for name, feature in dataset.features.items():
+        structure_lines.append(f"- **{name}**: {feature}")
+    dataset_structure = "This dataset contains the following columns:\n" + "\n".join(structure_lines)
+
+    dataset_summary = (
+        f"This dataset contains {frames} frames recorded from the Gymnasium environment "
+        f"`{env_id}` across {episodes} episodes."
+    )
+
+    user_info = whoami()
+    curator = user_info.get("name") or user_info.get("user") or "unknown"
+
+    card_data = DatasetCardData(
+        language="en",
+        license="mit",
+        task_categories=["reinforcement-learning"],
+        pretty_name=f"{env_id} Gameplay Dataset",
+    )
+
+    # Build card content manually to avoid placeholder fields
+    header = card_data.to_yaml()
+    content_lines = [
+        "---",
+        header,
+        "---",
+        "",
+        f"# {card_data.pretty_name}",
+        "",
+        dataset_summary,
+        "",
+        "## Dataset Structure",
+        dataset_structure,
+        "",
+        f"Curated by: {curator}",
+    ]
+    card = DatasetCard("\n".join(content_lines))
+
+    card.push_to_hub(
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message="Update dataset card",
+    )
+
 def create_env(env_id):
     # In case ROM is suffixed with platform name then use stable-retro
     retro_platforms = {
@@ -712,6 +764,7 @@ async def main():
             concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
         )
         final_dataset.push_to_hub(hf_repo_id)
+        generate_dataset_card(final_dataset, env_id, hf_repo_id)
     elif args.command == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)
