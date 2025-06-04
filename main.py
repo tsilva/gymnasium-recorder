@@ -8,7 +8,15 @@ import asyncio
 import tempfile
 import cv2
 from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
-from datasets import Dataset, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
+from datasets import (
+    Dataset,
+    Value,
+    Sequence,
+    Image as HFImage,
+    load_dataset,
+    load_dataset_builder,
+    concatenate_datasets,
+)
 from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
 from tqdm import tqdm
@@ -820,7 +828,14 @@ async def main():
     elif args.command == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)
-        total = loaded_dataset.info.splits["train"].num_examples
+        try:
+            builder = load_dataset_builder(hf_repo_id)
+            if builder.info.splits and "train" in builder.info.splits:
+                total = builder.info.splits["train"].num_examples
+            else:
+                total = None
+        except Exception:
+            total = None
         actions = (row["action"] for row in loaded_dataset)
         await recorder.replay(actions, fps=fps, total=total)
 
