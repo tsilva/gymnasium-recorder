@@ -68,10 +68,10 @@ Press `ESC` at any time to stop playing and automatically upload the frames reco
 ### Replaying a recorded session
 
 ```bash
-python main.py playback BreakoutNoFrameskip-v4
+python main.py playback BreakoutNoFrameskip-v4 --stream
 ```
 
-This will replay a previously recorded session from Hugging Face Hub, allowing you to verify the environment's deterministic behavior.
+This will replay a previously recorded session from Hugging Face Hub while streaming the dataset, so playback can start immediately without waiting for the full download. Omit `--stream` to download the dataset ahead of time.
 
 ### Listing available environments
 

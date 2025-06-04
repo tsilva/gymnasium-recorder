@@ -781,6 +781,11 @@ async def main():
     parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
     parser_playback.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_playback.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+    parser_playback.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream the dataset instead of pre-downloading it",
+    )
 
     subparsers.add_parser("list_environments", help="List available environments")
 
@@ -793,19 +798,32 @@ async def main():
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
     loaded_dataset = None
+    playback_actions = None
     api = HfApi()
     try:
         api.dataset_info(hf_repo_id)
-        loaded_dataset = load_dataset(
-            hf_repo_id,
-            split="train",
-            download_mode="force_redownload",
-        )
-        if isinstance(loaded_dataset.features["action"], Value):
-            loaded_dataset = loaded_dataset.map(lambda row: {"action": [row["action"]]})
-            loaded_dataset = loaded_dataset.cast_column("action", Sequence(Value("int64")))
+        if args.command == "playback" and getattr(args, "stream", False):
+            loaded_dataset = load_dataset(
+                hf_repo_id,
+                split="train",
+                streaming=True,
+            )
+            playback_actions = (
+                row["action"] if isinstance(row["action"], list) else [row["action"]]
+                for row in loaded_dataset
+            )
+        else:
+            loaded_dataset = load_dataset(
+                hf_repo_id,
+                split="train",
+                download_mode="force_redownload",
+            )
+            if isinstance(loaded_dataset.features["action"], Value):
+                loaded_dataset = loaded_dataset.map(lambda row: {"action": [row["action"]]})
+                loaded_dataset = loaded_dataset.cast_column("action", Sequence(Value("int64")))
     except Exception:
         loaded_dataset = None
+        playback_actions = None
 
     env = create_env(env_id)
     fps = args.fps if args.fps is not None else get_default_fps(env)
@@ -819,9 +837,11 @@ async def main():
         final_dataset.push_to_hub(hf_repo_id)
         generate_dataset_card(final_dataset, env_id, hf_repo_id)
     elif args.command == "playback":
-        assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
+        assert (loaded_dataset is not None) and (
+            playback_actions is not None or "action" in loaded_dataset
+        ), f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)
-        actions = loaded_dataset["action"]
+        actions = playback_actions if playback_actions is not None else loaded_dataset["action"]
         await recorder.replay(actions, fps=fps)
 
 if __name__ == "__main__":

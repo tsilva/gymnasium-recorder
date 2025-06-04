@@ -1,4 +1,4 @@
-- Add dataset streaming support
+- ~~Add dataset streaming support~~ (implemented)
 - Add Doom WAD support
 - Add validation for dataset fields
 - Make upload optional, in the end ask the user if he wants to upload and make default yes
