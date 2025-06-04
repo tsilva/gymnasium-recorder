@@ -6,7 +6,7 @@ import pygame
 import threading
 import asyncio
 import tempfile
-from PIL import Image as PILImage
+import cv2
 from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
@@ -254,9 +254,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     frame = frame[k]
                     break
 
-        img = PILImage.fromarray(frame.astype(np.uint8))
-        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
-        img.save(path, format="PNG")
+        frame_uint8 = frame.astype(np.uint8)
+        frame_bgr = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2BGR)
+        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.jpg")
+        cv2.imwrite(path, frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)

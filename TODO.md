@@ -1,7 +1,7 @@
 - Add dataset streaming support
 - Add Doom WAD support
 - Add dataset streaming support
-- Use JPEG + cv2.imwrite for speed
+- ~~Use JPEG + cv2.imwrite for speed~~ (done)
 - Add "timestamp" and "env_id" to dataset schema
 - Add validation for dataset fields
 - Add a flag to skip uploads and save locally
