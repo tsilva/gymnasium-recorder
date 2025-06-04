@@ -39,8 +39,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.K_UP: 1,
             pygame.K_RIGHT: 2,
             pygame.K_LEFT: 3,
-            pygame.K_DOWN: 4
+            pygame.K_DOWN: 4,
         }
+        self._vizdoom_buttons = None
         self.noop_action = 0
 
         self.episode_ids = []
@@ -100,42 +101,75 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 with self.key_lock: self.current_keys.discard(event.key)
         return True
 
+    def _init_vizdoom_key_mapping(self):
+        """Map important action names to their button indices."""
+        available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
+
+        def idx(name):
+            return available.index(name) if name in available else None
+
+        mapping = {
+            "ATTACK": idx("ATTACK"),
+            "USE": idx("USE"),
+            "MOVE_LEFT": idx("MOVE_LEFT"),
+            "MOVE_RIGHT": idx("MOVE_RIGHT"),
+            "MOVE_FORWARD": idx("MOVE_FORWARD"),
+            "MOVE_BACKWARD": idx("MOVE_BACKWARD"),
+            "TURN_LEFT": idx("TURN_LEFT"),
+            "TURN_RIGHT": idx("TURN_RIGHT"),
+            "SPEED": idx("SPEED"),
+        }
+
+        for i in range(1, 8):
+            mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
+
+        return {k: v for k, v in mapping.items() if v is not None}
+
     def _get_user_action(self):
         """
         Map pressed keys to actions, handling Atari (Discrete), stable-retro (MultiBinary), and VizDoom (MultiBinary) environments.
         """
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                n_buttons=self.env.action_space.n
-                action = np.zeros(10, dtype=np.int32)
-                keymap = {
-                    pygame.K_UP: 4,   # ATTACK
-                    pygame.K_LEFT: 0,    # MOVE_LEFT
-                    pygame.K_SPACE: 1,   # MOVE_RIGHT
-                    pygame.K_DOWN: 3,   # MOVE_RIGHT
-                    pygame.K_z: 0,   # MOVE_RIGHT
-                    pygame.K_x: 5,   # MOVE_RIGHT
-                    pygame.K_c: 6,   # MOVE_RIGHT
-                    pygame.K_v: 7   # MOVE_RIGHT
-                    #pygame.K_a: 8,   # MOVE_RIGHT
-                }
+                if self._vizdoom_buttons is None:
+                    self._vizdoom_buttons = self._init_vizdoom_key_mapping()
+                n_buttons = self.env.unwrapped.num_binary_buttons
+                action = np.zeros(n_buttons, dtype=np.int32)
 
-                for key, idx in keymap.items():
-                    if key in self.current_keys and idx < n_buttons:
+                pressed = self.current_keys
+                alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
+
+                def press(name):
+                    idx = self._vizdoom_buttons.get(name)
+                    if idx is not None and idx < n_buttons:
                         action[idx] = 1
-                action = reversed(action)
 
-                def _multibinary_to_discrete(action):
-                    """Convert a list of binary values to a discrete integer."""
-                    return int("".join(str(bit) for bit in action), 2)
-                
-                def _discrete_to_multibinary(value, length):
-                    """Convert an integer to a list of binary values of fixed length."""
-                    return [int(b) for b in format(value, f'0{length}b')]
+                if pygame.K_UP in pressed:
+                    press("MOVE_FORWARD")
+                if pygame.K_DOWN in pressed:
+                    press("MOVE_BACKWARD")
 
-                action = _multibinary_to_discrete(action)
-                print(action)
-                return action
+                if pygame.K_LEFT in pressed:
+                    press("MOVE_LEFT" if alt else "TURN_LEFT")
+                if pygame.K_RIGHT in pressed:
+                    press("MOVE_RIGHT" if alt else "TURN_RIGHT")
+
+                if pygame.K_LSHIFT in pressed or pygame.K_RSHIFT in pressed:
+                    press("SPEED")
+                if pygame.K_LCTRL in pressed or pygame.K_RCTRL in pressed:
+                    press("ATTACK")
+                if pygame.K_SPACE in pressed:
+                    press("USE")
+
+                for i in range(1, 8):
+                    key_const = getattr(pygame, f"K_{i}")
+                    if key_const in pressed:
+                        press(f"SELECT_WEAPON{i}")
+
+                for i, combo in enumerate(self.env.unwrapped.button_map):
+                    if np.array_equal(combo, action):
+                        return i
+                return 0
             # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
@@ -283,7 +317,8 @@ def create_env(env_id):
         env._stable_retro = True
     elif "Vizdoom" in env_id:
         from vizdoom import gymnasium_wrapper
-        env = gym.make(env_id, render_mode="rgb_array")
+        # allow pressing multiple buttons at once for smoother control
+        env = gym.make(env_id, render_mode="rgb_array", max_buttons_pressed=4)
         env._vizdoom = True
     # Otherwise use ale_py
     else:
