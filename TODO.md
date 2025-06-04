@@ -1,9 +1,10 @@
-- Add gym-retro support
-    - Generalize action mapping (env.buttons)
-    - Store MultiBinary in dataset
-    - Add support for play without recording
-- Add vizdoom support
-    - Fix action mapping
-    - Add wad support (eg: Doom1/Doom2)
+- Add dataset streaming support
+- Add Doom WAD support
+- Add support for listing available environments (command line)
 - Add dataset streaming support
 - Add auto dataset card generation
+- Use JPEG + cv2.imwrite for speed
+- Add "timestamp" and "env_id" to dataset schema
+- Add validation for dataset fields
+- Add a flag to skip uploads and save locally
+- Add support to only start game after user input (ignore that action)
