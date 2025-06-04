@@ -8,7 +8,15 @@ import asyncio
 import tempfile
 import cv2
 from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
-from datasets import Dataset, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
+from datasets import (
+    Dataset,
+    Value,
+    Sequence,
+    Image as HFImage,
+    load_dataset,
+    load_dataset_builder,
+    concatenate_datasets,
+)
 from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
 from tqdm import tqdm
@@ -532,14 +540,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
             await asyncio.sleep(1.0 / fps)
             step += 1 
 
-    async def replay(self, actions, fps=None):
+    async def replay(self, actions, fps=None, total=None):
         if fps is None:
             fps = get_default_fps(self.env)
         clock = pygame.time.Clock()
         obs, _ = self.env.reset()
         self._ensure_screen(obs)
         self._render_frame(obs)
-        for action in tqdm(actions):
+        for action in tqdm(actions, total=total):
             # Convert stored actions back to the environment's expected format
             if isinstance(action, list):
                 if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
@@ -797,11 +805,8 @@ async def main():
         loaded_dataset = load_dataset(
             hf_repo_id,
             split="train",
-            download_mode="force_redownload",
+            streaming=True,
         )
-        if isinstance(loaded_dataset.features["action"], Value):
-            loaded_dataset = loaded_dataset.map(lambda row: {"action": [row["action"]]})
-            loaded_dataset = loaded_dataset.cast_column("action", Sequence(Value("int64")))
     except Exception:
         loaded_dataset = None
 
@@ -823,8 +828,16 @@ async def main():
     elif args.command == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)
-        actions = loaded_dataset["action"]
-        await recorder.replay(actions, fps=fps)
+        try:
+            builder = load_dataset_builder(hf_repo_id)
+            if builder.info.splits and "train" in builder.info.splits:
+                total = builder.info.splits["train"].num_examples
+            else:
+                total = None
+        except Exception:
+            total = None
+        actions = (row["action"] for row in loaded_dataset)
+        await recorder.replay(actions, fps=fps, total=total)
 
 if __name__ == "__main__":
     asyncio.run(main())
