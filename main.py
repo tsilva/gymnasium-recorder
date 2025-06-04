@@ -566,13 +566,23 @@ def generate_dataset_card(dataset, env_id, repo_id):
         pretty_name=f"{env_id} Gameplay Dataset",
     )
 
-    card = DatasetCard.from_template(
-        card_data=card_data,
-        pretty_name=card_data.pretty_name,
-        dataset_summary=dataset_summary,
-        dataset_structure=dataset_structure,
-        curators=curator,
-    )
+    # Build card content manually to avoid placeholder fields
+    header = card_data.to_yaml()
+    content_lines = [
+        "---",
+        header,
+        "---",
+        "",
+        f"# {card_data.pretty_name}",
+        "",
+        dataset_summary,
+        "",
+        "## Dataset Structure",
+        dataset_structure,
+        "",
+        f"Curated by: {curator}",
+    ]
+    card = DatasetCard("\n".join(content_lines))
 
     card.push_to_hub(
         repo_id=repo_id,
