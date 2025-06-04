@@ -51,7 +51,10 @@ For VizDoom environments the keys are mapped automatically so that:
 
 Key mappings for Atari, VizDoom and stable-retro environments are now
 configured through a shared data structure in `main.py`. Edit the mapping
-there if you want to customize controls for a specific game.
+there if you want to customize controls for a specific game.  Atari
+mappings use action names (e.g. `RIGHT`, `FIRE`) which are converted to
+the correct action indices at runtime, so unsupported actions simply
+fall back to `NOOP`.
 
 You can hold multiple direction keys together to combine actions (for example,
 Up + Right to move forward while turning). Running, strafing and firing can also

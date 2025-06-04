@@ -29,10 +29,11 @@ ATARI_KEY_CONFIG = {
     "type": "discrete",
     "noop": 0,
     "mapping": {
-        pygame.K_UP: 1,
-        pygame.K_RIGHT: 2,
-        pygame.K_LEFT: 3,
-        pygame.K_DOWN: 4,
+        # Map keys to action names; indices are resolved at runtime
+        pygame.K_UP: "FIRE",     # Start / fire
+        pygame.K_RIGHT: "RIGHT",
+        pygame.K_LEFT: "LEFT",
+        pygame.K_DOWN: "DOWN",   # Fallback to NOOP if unsupported
     },
 }
 
@@ -80,6 +81,7 @@ class KeyMapper:
         self.env = env
         self.config = config or self._default_config()
         self._vizdoom_buttons: Optional[Dict[str, int]] = None
+        self._discrete_mapping: Optional[Dict[int, int]] = None
 
     # -------------------------------------------------------
     # Config helpers
@@ -94,10 +96,28 @@ class KeyMapper:
     # -------------------------------------------------------
     # Discrete environments (Atari)
     # -------------------------------------------------------
+    def _build_discrete_mapping(self):
+        self._discrete_mapping = {}
+        action_meanings = []
+        if hasattr(self.env.unwrapped, "get_action_meanings"):
+            try:
+                action_meanings = self.env.unwrapped.get_action_meanings()
+            except Exception:
+                action_meanings = []
+        for key, mapping in self.config["mapping"].items():
+            if isinstance(mapping, int):
+                idx = mapping
+            else:
+                idx = action_meanings.index(mapping) if mapping in action_meanings else None
+            if idx is not None:
+                self._discrete_mapping[key] = idx
+
     def _discrete_action(self, pressed: Iterable[int]):
+        if self._discrete_mapping is None:
+            self._build_discrete_mapping()
         for key in pressed:
-            if key in self.config["mapping"]:
-                return self.config["mapping"][key]
+            if key in self._discrete_mapping:
+                return self._discrete_mapping[key]
         return self.config.get("noop", 0)
 
     # -------------------------------------------------------
