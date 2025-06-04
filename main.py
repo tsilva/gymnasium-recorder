@@ -291,9 +291,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
     def _init_vizdoom_key_mapping(self):
         """Map important action names to their button indices."""
         available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
+        offset = self.env.unwrapped.num_delta_buttons
 
         def idx(name):
-            return available.index(name) if name in available else None
+            if name in available:
+                return available.index(name) - offset
+            return None
 
         mapping = {
             "ATTACK": idx("ATTACK"),
