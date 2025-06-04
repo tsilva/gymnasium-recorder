@@ -19,6 +19,184 @@ import gymnasium as gym
 
 REPO_PREFIX = "GymnasiumRecording__"
 
+# Default key mappings for each supported environment type
+ATARI_KEY_BINDINGS = {
+    pygame.K_UP: 1,
+    pygame.K_RIGHT: 2,
+    pygame.K_LEFT: 3,
+    pygame.K_DOWN: 4,
+}
+
+VIZDOOM_KEY_BINDINGS = {
+    pygame.K_UP: "MOVE_FORWARD",
+    pygame.K_DOWN: "MOVE_BACKWARD",
+    pygame.K_LEFT: "TURN_LEFT",
+    pygame.K_RIGHT: "TURN_RIGHT",
+    pygame.K_LSHIFT: "SPEED",
+    pygame.K_RSHIFT: "SPEED",
+    pygame.K_LCTRL: "ATTACK",
+    pygame.K_RCTRL: "ATTACK",
+    pygame.K_SPACE: "USE",
+}
+for i in range(1, 8):
+    VIZDOOM_KEY_BINDINGS[getattr(pygame, f"K_{i}")] = f"SELECT_WEAPON{i}"
+
+STABLE_RETRO_KEY_BINDINGS = {
+    "Nes": {
+        pygame.K_z: 0,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+    },
+    "Atari2600": {
+        pygame.K_z: 0,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+    },
+    "Snes": {
+        pygame.K_z: 0,
+        pygame.K_a: 1,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+        pygame.K_s: 9,
+        pygame.K_q: 10,
+        pygame.K_w: 11,
+    },
+    "GbAdvance": {
+        pygame.K_z: 0,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+        pygame.K_a: 10,
+        pygame.K_s: 11,
+    },
+    "GameBoy": {
+        pygame.K_z: 0,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+    },
+    "GbColor": {
+        pygame.K_z: 0,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+    },
+    "PCEngine": {
+        pygame.K_x: 0,
+        pygame.K_c: 1,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_z: 8,
+        pygame.K_a: 9,
+        pygame.K_s: 10,
+        pygame.K_d: 11,
+    },
+    "Saturn": {
+        pygame.K_x: 0,
+        pygame.K_z: 1,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_c: 8,
+        pygame.K_a: 9,
+        pygame.K_s: 10,
+        pygame.K_d: 11,
+    },
+    "32x": {
+        pygame.K_x: 0,
+        pygame.K_z: 1,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_c: 8,
+        pygame.K_a: 9,
+        pygame.K_s: 10,
+        pygame.K_d: 11,
+    },
+    "Genesis": {
+        pygame.K_x: 0,
+        pygame.K_z: 1,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_c: 8,
+        pygame.K_a: 9,
+        pygame.K_s: 10,
+        pygame.K_d: 11,
+    },
+    "Sms": {
+        pygame.K_z: 0,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+    },
+    "GameGear": {
+        pygame.K_z: 0,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,
+    },
+    "SCD": {
+        pygame.K_x: 0,
+        pygame.K_z: 1,
+        pygame.K_TAB: 2,
+        pygame.K_RETURN: 3,
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_c: 8,
+        pygame.K_a: 9,
+        pygame.K_s: 10,
+        pygame.K_d: 11,
+    },
+}
+
 class DatasetRecorderWrapper(gym.Wrapper):
     """
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
@@ -35,12 +213,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
-        self.key_to_action = {
-            pygame.K_UP: 1,
-            pygame.K_RIGHT: 2,
-            pygame.K_LEFT: 3,
-            pygame.K_DOWN: 4,
-        }
+        self.key_to_action = ATARI_KEY_BINDINGS
         self._vizdoom_buttons = None
         self.noop_action = 0
 
@@ -152,27 +325,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     if idx is not None and idx < n_buttons:
                         action[idx] = 1
 
-                if pygame.K_UP in pressed:
-                    press("MOVE_FORWARD")
-                if pygame.K_DOWN in pressed:
-                    press("MOVE_BACKWARD")
-
-                if pygame.K_LEFT in pressed:
-                    press("MOVE_LEFT" if alt else "TURN_LEFT")
-                if pygame.K_RIGHT in pressed:
-                    press("MOVE_RIGHT" if alt else "TURN_RIGHT")
-
-                if pygame.K_LSHIFT in pressed or pygame.K_RSHIFT in pressed:
-                    press("SPEED")
-                if pygame.K_LCTRL in pressed or pygame.K_RCTRL in pressed:
-                    press("ATTACK")
-                if pygame.K_SPACE in pressed:
-                    press("USE")
-
-                for i in range(1, 8):
-                    key_const = getattr(pygame, f"K_{i}")
-                    if key_const in pressed:
-                        press(f"SELECT_WEAPON{i}")
+                for key, name in VIZDOOM_KEY_BINDINGS.items():
+                    if key in pressed:
+                        if key == pygame.K_LEFT:
+                            press("MOVE_LEFT" if alt else name)
+                        elif key == pygame.K_RIGHT:
+                            press("MOVE_RIGHT" if alt else name)
+                        else:
+                            press(name)
 
                 # If env expects discrete actions, map button vector to index
                 if isinstance(self.env.action_space, gym.spaces.Discrete):
@@ -182,37 +342,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     return 0
                 # Otherwise return the raw MultiBinary action vector
                 return action
-            # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
-                # SuperMarioBros-Nes: MultiBinary(8) action space
-                action = np.zeros(self.env.action_space.n, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
-                #['B', None, 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A']
-
-                # @tsilva HACK: clean this up
+                action = np.zeros(self.env.action_space.n, dtype=np.int32)
+                platform = getattr(self.env.unwrapped, "system", None)
+                mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
                 for key in self.current_keys:
-                    if key == pygame.K_z:  # A
-                        action[0] = 1
-                    elif key == pygame.K_q:  # SELECT
-                        action[2] = 1
-                    if key == pygame.K_r:  # START
-                        action[3] = 1
-                    elif key == pygame.K_UP:  
-                        action[4] = 1
-                    elif key == pygame.K_DOWN: 
-                        action[5] = 1
-                    elif key == pygame.K_LEFT:   
-                        action[6] = 1
-                    elif key == pygame.K_RIGHT: 
-                        action[7] = 1
-                    if key == pygame.K_x:  # B
-                        action[8] = 1
-
-                #import numpy as np
-
-                #action[0] = 1
-                #action[7] = 1
-                #action[8] = 1
-
+                    idx = mapping.get(key)
+                    if idx is not None and idx < action.shape[0]:
+                        action[idx] = 1
                 return action
             else:
                 # Atari: Discrete action space
@@ -326,7 +463,21 @@ def env_id_to_hf_repo_id(env_id):
 
 def create_env(env_id):
     # In case ROM is suffixed with platform name then use stable-retro
-    retro_platforms = {"Nes", "GameBoy", "Snes", "Atari2600", "Genesis"}
+    retro_platforms = {
+        "Nes",
+        "Atari2600",
+        "Snes",
+        "GbAdvance",
+        "GameBoy",
+        "GbColor",
+        "PCEngine",
+        "Saturn",
+        "32x",
+        "Genesis",
+        "Sms",
+        "GameGear",
+        "SCD",
+    }
     match = re.search(r"-(" + "|".join(retro_platforms) + r")$", env_id)
     if match:
         import retro
@@ -353,7 +504,20 @@ def get_default_fps(env_id):
     Return a sensible default FPS for the given environment.
     """
     # NES and most retro consoles: 60 FPS
-    retro_platforms_60fps = {"Nes", "GameBoy", "Snes", "Genesis"}
+    retro_platforms_60fps = {
+        "Nes",
+        "GameBoy",
+        "Snes",
+        "GbAdvance",
+        "GbColor",
+        "Genesis",
+        "PCEngine",
+        "Saturn",
+        "32x",
+        "Sms",
+        "GameGear",
+        "SCD",
+    }
     # Atari 2600: 60 FPS (but Gymnasium ALE often uses 15 or 30 for human play)
     if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps):
         return 60
