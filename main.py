@@ -6,8 +6,7 @@ import pygame
 import threading
 import asyncio
 import tempfile
-from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional
 from PIL import Image as PILImage
 from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami

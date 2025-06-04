@@ -36,10 +36,6 @@ cp .env.example .env
 python main.py record BreakoutNoFrameskip-v4
 ```
 
-This will open a pygame window where you can play Breakout. Use the following controls:
-- Space: Action 1
-- Right Arrow: Action 2
-- Left Arrow: Action 3
 
 For VizDoom environments the keys are mapped automatically so that:
 - Arrow keys move forward/backward and turn left/right
@@ -65,6 +61,30 @@ Up + Right to move forward while turning). Running, strafing and firing can also
 be combined with movement.
 
 The session will be automatically saved as a dataset and uploaded to Hugging Face Hub if you've provided a token.
+### Default key mappings
+
+The tables below show the default keyboard controls for each environment type.
+
+#### Atari (gymnasium ALE)
+- Arrow keys move the agent
+- Spacebar fires/jumps
+- Direction + Space triggers the matching `*FIRE` action
+- Diagonal directions are supported when available
+
+#### stable-retro consoles (NES, SNES, GB, Genesis)
+- Z: A button
+- X: B button
+- Q: SELECT
+- R: START
+- Arrow keys: D-pad directions
+
+#### VizDoom
+- Up/Down arrows: MOVE_FORWARD / MOVE_BACKWARD
+- Left/Right arrows: TURN_LEFT / TURN_RIGHT (hold Alt to strafe)
+- Shift: SPEED (run)
+- Ctrl: ATTACK
+- Spacebar: USE
+- Number keys 1-7: SELECT_WEAPON1-7
 
 ### Replaying a recorded session
 
