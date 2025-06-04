@@ -98,9 +98,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
         Handle pygame input events.
         """
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: return False
+            if event.type == pygame.QUIT:
+                return False
             elif event.type == pygame.KEYDOWN:
-                with self.key_lock: self.current_keys.add(event.key)
+                if event.key == pygame.K_ESCAPE:
+                    return False
+                with self.key_lock:
+                    self.current_keys.add(event.key)
             elif event.type == pygame.KEYUP:
                 with self.key_lock: self.current_keys.discard(event.key)
         return True
