@@ -8,7 +8,7 @@ import asyncio
 import tempfile
 import cv2
 from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
-from huggingface_hub import whoami, DatasetCard, DatasetCardData
+from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
 import argparse
 from tqdm import tqdm
 
@@ -755,8 +755,15 @@ async def main():
 
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
+    loaded_dataset = None
+    api = HfApi()
     try:
-        loaded_dataset = load_dataset(hf_repo_id, split="train")
+        api.dataset_info(hf_repo_id)
+        loaded_dataset = load_dataset(
+            hf_repo_id,
+            split="train",
+            download_mode="force_redownload",
+        )
         if isinstance(loaded_dataset.features["action"], Value):
             loaded_dataset = loaded_dataset.map(lambda row: {"action": [row["action"]]})
             loaded_dataset = loaded_dataset.cast_column("action", Sequence(Value("int64")))
