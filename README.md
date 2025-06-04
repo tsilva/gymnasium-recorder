@@ -72,7 +72,8 @@ python main.py list_environments
 ```
 
 This will print all Atari environments, all stable-retro games with ROM availability
-indicated, and any VizDoom environments found (including WADs if present).
+indicated using `(imported)` or `(missing ROM)`, and any VizDoom environments
+found (including WADs if present).
 
 ## 📄 License
 

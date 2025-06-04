@@ -582,8 +582,11 @@ def list_environments():
         if all_games:
             print("\n=== Stable-Retro Games ===")
             for game in all_games:
-                available = retro.data.get_file_path(game, "rom.sha") is not None
-                status = "(imported)" if available else "(missing ROM)"
+                try:
+                    retro.data.get_romfile_path(game, retro.data.Integrations.ALL)
+                    status = "(imported)"
+                except FileNotFoundError:
+                    status = "(missing ROM)"
                 print(f"{game} {status}")
         else:
             print("\nStable-Retro package installed but no games found.")
