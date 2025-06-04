@@ -1,5 +1,4 @@
 - Add dataset streaming support
 - Add Doom WAD support
 - Add validation for dataset fields
-- Make upload optional, in the end ask the user if he wants to upload and make default yes
 - BUG: "env_id" is being uploaded as "unknown", consider not uploading and just setting it in dataset card
