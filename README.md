@@ -56,6 +56,10 @@ mappings use action names (e.g. `RIGHT`, `FIRE`) which are converted to
 the correct action indices at runtime, so unsupported actions simply
 fall back to `NOOP`.
 
+Holding a direction together with the spacebar will trigger the
+corresponding `*FIRE` combination (e.g. Right + Space = `RIGHTFIRE`) when
+the game supports it.
+
 You can hold multiple direction keys together to combine actions (for example,
 Up + Right to move forward while turning). Running, strafing and firing can also
 be combined with movement.

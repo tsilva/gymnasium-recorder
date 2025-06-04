@@ -36,6 +36,23 @@ ATARI_KEY_CONFIG = {
         pygame.K_LEFT: "LEFT",
         pygame.K_DOWN: "DOWN",   # Fallback to NOOP if unsupported
     },
+    "combos": {
+        # Direction + fire/jump combinations
+        (pygame.K_RIGHT, pygame.K_SPACE): "RIGHTFIRE",
+        (pygame.K_LEFT, pygame.K_SPACE): "LEFTFIRE",
+        (pygame.K_UP, pygame.K_SPACE): "UPFIRE",
+        (pygame.K_DOWN, pygame.K_SPACE): "DOWNFIRE",
+        # Diagonal movement
+        (pygame.K_UP, pygame.K_RIGHT): "UPRIGHT",
+        (pygame.K_UP, pygame.K_LEFT): "UPLEFT",
+        (pygame.K_DOWN, pygame.K_RIGHT): "DOWNRIGHT",
+        (pygame.K_DOWN, pygame.K_LEFT): "DOWNLEFT",
+        # Diagonal + fire
+        (pygame.K_UP, pygame.K_RIGHT, pygame.K_SPACE): "UPRIGHTFIRE",
+        (pygame.K_UP, pygame.K_LEFT, pygame.K_SPACE): "UPLEFTFIRE",
+        (pygame.K_DOWN, pygame.K_RIGHT, pygame.K_SPACE): "DOWNRIGHTFIRE",
+        (pygame.K_DOWN, pygame.K_LEFT, pygame.K_SPACE): "DOWNLEFTFIRE",
+    },
 }
 
 STABLE_RETRO_KEY_CONFIG = {
@@ -83,6 +100,7 @@ class KeyMapper:
         self.config = config or self._default_config()
         self._vizdoom_buttons: Optional[Dict[str, int]] = None
         self._discrete_mapping: Optional[Dict[int, int]] = None
+        self._discrete_combo_mapping: Optional[Dict[frozenset, int]] = None
 
     # -------------------------------------------------------
     # Config helpers
@@ -99,6 +117,7 @@ class KeyMapper:
     # -------------------------------------------------------
     def _build_discrete_mapping(self):
         self._discrete_mapping = {}
+        self._discrete_combo_mapping = {}
         action_meanings = []
         if hasattr(self.env.unwrapped, "get_action_meanings"):
             try:
@@ -112,11 +131,23 @@ class KeyMapper:
                 idx = action_meanings.index(mapping) if mapping in action_meanings else None
             if idx is not None:
                 self._discrete_mapping[key] = idx
+        for keys, mapping in self.config.get("combos", {}).items():
+            if isinstance(mapping, int):
+                idx = mapping
+            else:
+                idx = action_meanings.index(mapping) if mapping in action_meanings else None
+            if idx is not None:
+                self._discrete_combo_mapping[frozenset(keys)] = idx
 
     def _discrete_action(self, pressed: Iterable[int]):
         if self._discrete_mapping is None:
             self._build_discrete_mapping()
-        for key in pressed:
+        pressed_set = set(pressed)
+        # Check combinations first (longer combos have priority)
+        for keys, idx in sorted(self._discrete_combo_mapping.items(), key=lambda i: len(i[0]), reverse=True):
+            if keys.issubset(pressed_set):
+                return idx
+        for key in pressed_set:
             if key in self._discrete_mapping:
                 return self._discrete_mapping[key]
         return self.config.get("noop", 0)
