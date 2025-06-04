@@ -7,8 +7,9 @@ import threading
 import asyncio
 import tempfile
 import cv2
-from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
+from datasets import Dataset, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
+from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
 from tqdm import tqdm
 
@@ -18,6 +19,7 @@ load_dotenv(override=True)  # Load environment variables from .env file
 import gymnasium as gym
 
 REPO_PREFIX = "GymnasiumRecording__"
+START_KEY = pygame.K_SPACE
 
 # Default key mappings for each supported environment type
 ATARI_KEY_BINDINGS = {
@@ -435,6 +437,37 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
 
+    def _wait_for_start(self, start_key: int = START_KEY) -> bool:
+        """Display overlay prompting the user to start.
+
+        Returns True if the start key was pressed, False if the user closed the
+        window or pressed ESC.
+        """
+        if self.screen is None:
+            return True
+
+        font = pygame.font.Font(None, 48)
+        text = font.render("Press SPACE to start", True, (255, 255, 255))
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        text_rect = text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2))
+
+        clock = pygame.time.Clock()
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return False
+                    if event.key == start_key:
+                        return True
+            # Redraw overlay each frame
+            self.screen.blit(overlay, (0, 0))
+            self.screen.blit(text, text_rect)
+            pygame.display.flip()
+            clock.tick(30)
+
     async def record(self, fps=None):
         """Record a gameplay session at the desired FPS."""
         if fps is None:
@@ -486,6 +519,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         obs, _ = self.env.reset()
         self._ensure_screen(obs)  # Ensure pygame window is created after first obs
         self._render_frame(obs)
+        if not self._wait_for_start():
+            return
+        with self.key_lock:
+            self.current_keys.clear()
         done = False
         step = 0
         while not done:
