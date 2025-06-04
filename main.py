@@ -30,7 +30,8 @@ ATARI_KEY_CONFIG = {
     "noop": 0,
     "mapping": {
         # Map keys to action names; indices are resolved at runtime
-        pygame.K_UP: "FIRE",     # Start / fire
+        pygame.K_SPACE: "FIRE",
+        pygame.K_UP: "UP",
         pygame.K_RIGHT: "RIGHT",
         pygame.K_LEFT: "LEFT",
         pygame.K_DOWN: "DOWN",   # Fallback to NOOP if unsupported
