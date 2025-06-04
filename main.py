@@ -306,57 +306,63 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         return {k: v for k, v in mapping.items() if v is not None}
 
+    def _get_atari_action(self):
+        """Return the Discrete action index for Atari environments."""
+        for key in self.current_keys:
+            if key in self.key_to_action:
+                return self.key_to_action[key]
+        return self.noop_action
+
+    def _get_vizdoom_action(self):
+        """Return the MultiBinary action vector for VizDoom environments."""
+        if self._vizdoom_buttons is None:
+            self._vizdoom_buttons = self._init_vizdoom_key_mapping()
+        n_buttons = self.env.unwrapped.num_binary_buttons
+        action = np.zeros(n_buttons, dtype=np.int32)
+
+        pressed = self.current_keys
+        alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
+
+        def press(name):
+            idx = self._vizdoom_buttons.get(name)
+            if idx is not None and idx < n_buttons:
+                action[idx] = 1
+
+        for key, name in VIZDOOM_KEY_BINDINGS.items():
+            if key in pressed:
+                if key == pygame.K_LEFT:
+                    press("MOVE_LEFT" if alt else name)
+                elif key == pygame.K_RIGHT:
+                    press("MOVE_RIGHT" if alt else name)
+                else:
+                    press(name)
+
+        if isinstance(self.env.action_space, gym.spaces.Discrete):
+            for i, combo in enumerate(self.env.unwrapped.button_map):
+                if np.array_equal(combo, action):
+                    return i
+            return 0
+        return action
+
+    def _get_stable_retro_action(self):
+        """Return the MultiBinary action vector for stable-retro environments."""
+        action = np.zeros(self.env.action_space.n, dtype=np.int32)
+        platform = getattr(self.env.unwrapped, "system", None)
+        mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
+        for key in self.current_keys:
+            idx = mapping.get(key)
+            if idx is not None and idx < action.shape[0]:
+                action[idx] = 1
+        return action
+
     def _get_user_action(self):
-        """
-        Map pressed keys to actions, handling Atari (Discrete), stable-retro (MultiBinary), and VizDoom (MultiBinary) environments.
-        """
+        """Map pressed keys to actions for the current environment."""
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                if self._vizdoom_buttons is None:
-                    self._vizdoom_buttons = self._init_vizdoom_key_mapping()
-                n_buttons = self.env.unwrapped.num_binary_buttons
-                action = np.zeros(n_buttons, dtype=np.int32)
-
-                pressed = self.current_keys
-                alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
-
-                def press(name):
-                    idx = self._vizdoom_buttons.get(name)
-                    if idx is not None and idx < n_buttons:
-                        action[idx] = 1
-
-                for key, name in VIZDOOM_KEY_BINDINGS.items():
-                    if key in pressed:
-                        if key == pygame.K_LEFT:
-                            press("MOVE_LEFT" if alt else name)
-                        elif key == pygame.K_RIGHT:
-                            press("MOVE_RIGHT" if alt else name)
-                        else:
-                            press(name)
-
-                # If env expects discrete actions, map button vector to index
-                if isinstance(self.env.action_space, gym.spaces.Discrete):
-                    for i, combo in enumerate(self.env.unwrapped.button_map):
-                        if np.array_equal(combo, action):
-                            return i
-                    return 0
-                # Otherwise return the raw MultiBinary action vector
-                return action
+                return self._get_vizdoom_action()
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
-                action = np.zeros(self.env.action_space.n, dtype=np.int32)
-                platform = getattr(self.env.unwrapped, "system", None)
-                mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
-                for key in self.current_keys:
-                    idx = mapping.get(key)
-                    if idx is not None and idx < action.shape[0]:
-                        action[idx] = 1
-                return action
-            else:
-                # Atari: Discrete action space
-                for key in self.current_keys:
-                    if key in self.key_to_action:
-                        return self.key_to_action[key]
-                return self.noop_action
+                return self._get_stable_retro_action()
+            return self._get_atari_action()
 
     def _render_frame(self, frame):
         """
