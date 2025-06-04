@@ -41,7 +41,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.K_LEFT: 3,
             pygame.K_DOWN: 4,
         }
-        self._vizdoom_key_to_button = None
+        self._vizdoom_buttons = None
         self.noop_action = 0
 
         self.episode_ids = []
@@ -102,23 +102,27 @@ class DatasetRecorderWrapper(gym.Wrapper):
         return True
 
     def _init_vizdoom_key_mapping(self):
-        """Create a mapping from pygame keys to VizDoom button indices."""
-        buttons = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
-        mapping = {}
+        """Map important action names to their button indices."""
+        available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
 
-        def find_button(names):
-            for name in names:
-                if name in buttons:
-                    return buttons.index(name)
-            return None
+        def idx(name):
+            return available.index(name) if name in available else None
 
-        mapping[pygame.K_SPACE] = find_button(["ATTACK", "USE"])
-        mapping[pygame.K_LEFT] = find_button(["MOVE_LEFT", "TURN_LEFT"])
-        mapping[pygame.K_RIGHT] = find_button(["MOVE_RIGHT", "TURN_RIGHT"])
-        mapping[pygame.K_UP] = find_button(["MOVE_FORWARD"])
-        mapping[pygame.K_DOWN] = find_button(["MOVE_BACKWARD"])
+        mapping = {
+            "ATTACK": idx("ATTACK"),
+            "USE": idx("USE"),
+            "MOVE_LEFT": idx("MOVE_LEFT"),
+            "MOVE_RIGHT": idx("MOVE_RIGHT"),
+            "MOVE_FORWARD": idx("MOVE_FORWARD"),
+            "MOVE_BACKWARD": idx("MOVE_BACKWARD"),
+            "TURN_LEFT": idx("TURN_LEFT"),
+            "TURN_RIGHT": idx("TURN_RIGHT"),
+            "SPEED": idx("SPEED"),
+        }
 
-        # Drop None entries
+        for i in range(1, 8):
+            mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
+
         return {k: v for k, v in mapping.items() if v is not None}
 
     def _get_user_action(self):
@@ -127,14 +131,41 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                if self._vizdoom_key_to_button is None:
-                    self._vizdoom_key_to_button = self._init_vizdoom_key_mapping()
+                if self._vizdoom_buttons is None:
+                    self._vizdoom_buttons = self._init_vizdoom_key_mapping()
                 n_buttons = self.env.unwrapped.num_binary_buttons
                 action = np.zeros(n_buttons, dtype=np.int32)
-                for key, idx in self._vizdoom_key_to_button.items():
-                    if key in self.current_keys and idx < n_buttons:
+
+                pressed = self.current_keys
+                alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
+
+                def press(name):
+                    idx = self._vizdoom_buttons.get(name)
+                    if idx is not None and idx < n_buttons:
                         action[idx] = 1
-                # convert binary vector to discrete action index
+
+                if pygame.K_UP in pressed:
+                    press("MOVE_FORWARD")
+                if pygame.K_DOWN in pressed:
+                    press("MOVE_BACKWARD")
+
+                if pygame.K_LEFT in pressed:
+                    press("MOVE_LEFT" if alt else "TURN_LEFT")
+                if pygame.K_RIGHT in pressed:
+                    press("MOVE_RIGHT" if alt else "TURN_RIGHT")
+
+                if pygame.K_LSHIFT in pressed or pygame.K_RSHIFT in pressed:
+                    press("SPEED")
+                if pygame.K_LCTRL in pressed or pygame.K_RCTRL in pressed:
+                    press("ATTACK")
+                if pygame.K_SPACE in pressed:
+                    press("USE")
+
+                for i in range(1, 8):
+                    key_const = getattr(pygame, f"K_{i}")
+                    if key_const in pressed:
+                        press(f"SELECT_WEAPON{i}")
+
                 for i, combo in enumerate(self.env.unwrapped.button_map):
                     if np.array_equal(combo, action):
                         return i
