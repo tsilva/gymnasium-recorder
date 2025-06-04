@@ -337,11 +337,34 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 else:
                     press(name)
 
-        if isinstance(self.env.action_space, gym.spaces.Discrete):
+        space = self.env.action_space
+        # When the action space contains both binary and continuous components
+        # (e.g. Dict["binary", "continuous"]), build the appropriate dict
+        if isinstance(space, gym.spaces.Dict):
+            binary_space = space.get("binary")
+            continuous_space = space.get("continuous")
+            if isinstance(binary_space, gym.spaces.Discrete):
+                idx = 0
+                for i, combo in enumerate(self.env.unwrapped.button_map):
+                    if np.array_equal(combo, action):
+                        idx = i
+                        break
+                binary_action = idx
+            else:
+                binary_action = action
+
+            if continuous_space is not None:
+                cont_shape = continuous_space.shape
+                continuous_action = np.zeros(cont_shape, dtype=np.float32)
+                return {"binary": binary_action, "continuous": continuous_action}
+            return {"binary": binary_action}
+
+        if isinstance(space, gym.spaces.Discrete):
             for i, combo in enumerate(self.env.unwrapped.button_map):
                 if np.array_equal(combo, action):
                     return i
             return 0
+
         return action
 
     def _get_stable_retro_action(self):
