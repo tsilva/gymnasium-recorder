@@ -782,6 +782,15 @@ async def main():
     parser_playback.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_playback.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
     parser_playback.add_argument(
+        "--repo-id",
+        type=str,
+        default=None,
+        help=(
+            "Dataset repository to load from. "
+            "Defaults to <username>/GymnasiumRecording__<env_id>."
+        ),
+    )
+    parser_playback.add_argument(
         "--stream",
         action="store_true",
         help="Stream the dataset instead of pre-downloading it",
@@ -796,7 +805,7 @@ async def main():
         return
 
     env_id = args.env_id
-    hf_repo_id = env_id_to_hf_repo_id(env_id)
+    hf_repo_id = args.repo_id if getattr(args, "repo_id", None) else env_id_to_hf_repo_id(env_id)
     loaded_dataset = None
     playback_actions = None
     api = HfApi()
@@ -821,7 +830,8 @@ async def main():
             if isinstance(loaded_dataset.features["action"], Value):
                 loaded_dataset = loaded_dataset.map(lambda row: {"action": [row["action"]]})
                 loaded_dataset = loaded_dataset.cast_column("action", Sequence(Value("int64")))
-    except Exception:
+    except Exception as e:
+        print(f"Failed to load dataset {hf_repo_id}: {e}")
         loaded_dataset = None
         playback_actions = None
 
