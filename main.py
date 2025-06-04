@@ -415,10 +415,19 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """Map pressed keys to actions for the current environment."""
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                return self._get_vizdoom_action()
+                return self._get_user_action__vizdoom()
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
-                return self._get_stable_retro_action()
-            return self._get_atari_action()
+                return self._get_user_action__stableretro()
+            return self._get_user_action__alepy()
+
+    def _get_user_action__vizdoom(self):
+        return self._get_vizdoom_action()
+
+    def _get_user_action__stableretro(self):
+        return self._get_stable_retro_action()
+
+    def _get_user_action__alepy(self):
+        return self._get_atari_action()
 
     def _render_frame(self, frame):
         """
@@ -642,8 +651,29 @@ def generate_dataset_card(dataset, env_id, repo_id):
         commit_message="Update dataset card",
     )
 
+def _create_env__stableretro(env_id):
+    import retro
+    env = retro.make(env_id, render_mode="rgb_array")
+    env._stable_retro = True
+    return env
+
+
+def _create_env__vizdoom(env_id):
+    from vizdoom import gymnasium_wrapper
+    env = gym.make(env_id, render_mode="rgb_array", max_buttons_pressed=0)
+    env._vizdoom = True
+    return env
+
+
+def _create_env__alepy(env_id):
+    import ale_py
+    gym.register_envs(ale_py)
+    return gym.make(env_id, render_mode="rgb_array")
+
+
 def create_env(env_id):
-    # In case ROM is suffixed with platform name then use stable-retro
+    """Create a Gymnasium environment with the appropriate backend."""
+
     retro_platforms = {
         "Nes",
         "Atari2600",
@@ -661,32 +691,33 @@ def create_env(env_id):
     }
     match = re.search(r"-(" + "|".join(retro_platforms) + r")$", env_id)
     if match:
-        import retro
-        #platform = match.group(1)
-        #game_name = env_id.replace(f"-{platform}", "")
-        env = retro.make(env_id, render_mode="rgb_array")
-        env._stable_retro = True
+        env = _create_env__stableretro(env_id)
     elif "Vizdoom" in env_id:
-        from vizdoom import gymnasium_wrapper
-        # use MultiBinary actions to avoid losing button presses
-        env = gym.make(env_id, render_mode="rgb_array", max_buttons_pressed=0)
-        env._vizdoom = True
-    # Otherwise use ale_py
+        env = _create_env__vizdoom(env_id)
     else:
-        import ale_py
-        gym.register_envs(ale_py)
-        env = gym.make(env_id, render_mode="rgb_array")
-    
+        env = _create_env__alepy(env_id)
+
     env._env_id = env_id.replace("-", "_")
     return env
+
+def _get_default_fps__stableretro(env_id: str) -> int:
+    """Return a default FPS for stable-retro environments."""
+    return 60
+
+
+def _get_default_fps__vizdoom(env_id: str) -> int:
+    """Return a default FPS for VizDoom environments."""
+    return 35
+
+
+def _get_default_fps__alepy(env_id: str) -> int:
+    """Return a default FPS for Atari environments."""
+    return 15
+
 
 def get_default_fps(env):
     """Determine a sensible default FPS for an environment."""
 
-    # First try to read FPS information from the environment metadata. This is
-    # provided by most Gymnasium environments.  gym-retro/stable-retro exposes
-    # the console framerate under ``video.frames_per_second`` while Atari/VizDoom
-    # and others use ``render_fps``.
     for key in ("render_fps", "video.frames_per_second"):
         fps = env.metadata.get(key)
         if fps:
@@ -695,11 +726,8 @@ def get_default_fps(env):
             except (TypeError, ValueError):
                 pass
 
-    # Fall back to heuristics based on the environment id when metadata is not
-    # available.  These values are approximate but keep gameplay reasonable.
     env_id = getattr(env, "_env_id", "")
 
-    # Some retro consoles commonly run at 60 FPS
     retro_platforms_60fps = {
         "Nes",
         "GameBoy",
@@ -714,20 +742,20 @@ def get_default_fps(env):
         "GameGear",
         "SCD",
     }
+
     if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps) or "Atari2600" in env_id:
-        return 60
+        return _get_default_fps__stableretro(env_id)
 
     if "Vizdoom" in env_id or "vizdoom" in env_id:
-        return 35
+        return _get_default_fps__vizdoom(env_id)
 
-    # Atari via ALE is often played at a reduced 15 FPS for humans
     if "NoFrameskip" in env_id or "ALE" in env_id:
-        return 15
+        return _get_default_fps__alepy(env_id)
 
-    return 15
+    return _get_default_fps__alepy(env_id)
 
-def list_environments():
-    """Print available Atari, stable-retro and VizDoom environments."""
+
+def _list_environments__alepy():
     print("=== Atari Environments ===")
     try:
         import ale_py
@@ -742,6 +770,8 @@ def list_environments():
     except Exception as e:
         print(f"Could not list Atari environments: {e}")
 
+
+def _list_environments__stableretro():
     try:
         import retro
         all_games = sorted(retro.data.list_games(retro.data.Integrations.ALL))
@@ -759,9 +789,11 @@ def list_environments():
     except Exception as e:
         print(f"\nStable-Retro not installed: {e}")
 
+
+def _list_environments__vizdoom():
     try:
         import vizdoom
-        import vizdoom.gymnasium_wrapper  # register gym environments
+        import vizdoom.gymnasium_wrapper
         vizdoom_ids = [
             env_id for env_id in gym.envs.registry.keys() if env_id.startswith("Vizdoom")
         ]
@@ -775,6 +807,13 @@ def list_environments():
                 print(wad)
     except Exception:
         print("\nVizDoom not installed.")
+
+
+def list_environments():
+    """Print available Atari, stable-retro and VizDoom environments."""
+    _list_environments__alepy()
+    _list_environments__stableretro()
+    _list_environments__vizdoom()
 
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
