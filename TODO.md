@@ -1,8 +1,5 @@
 - Add dataset streaming support
 - Add Doom WAD support
-- Add dataset streaming support
-- Use JPEG + cv2.imwrite for speed
-- Add "timestamp" and "env_id" to dataset schema
 - Add validation for dataset fields
-- Add a flag to skip uploads and save locally
-- ~~Add support to only start game after user input (ignore that action)~~ (done)
+- Make upload optional, in the end ask the user if he wants to upload and make default yes
+- BUG: "env_id" is being uploaded as "unknown", consider not uploading and just setting it in dataset card
