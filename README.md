@@ -65,6 +65,16 @@ python main.py playback BreakoutNoFrameskip-v4
 
 This will replay a previously recorded session from Hugging Face Hub, allowing you to verify the environment's deterministic behavior.
 
+### Listing available environments
+
+```bash
+python main.py list_environments
+```
+
+This will print all Atari environments, all stable-retro games with ROM availability
+indicated using `(imported)` or `(missing ROM)`, and any VizDoom environments
+found (including WADs if present).
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
