@@ -215,6 +215,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.key_lock = threading.Lock()
         self.key_to_action = ATARI_KEY_BINDINGS
         self._vizdoom_buttons = None
+        self._vizdoom_vector_map = None
         self.noop_action = 0
 
         self.episode_ids = []
@@ -309,6 +310,17 @@ class DatasetRecorderWrapper(gym.Wrapper):
         for i in range(1, 8):
             mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
 
+        # Precompute vector -> discrete action mapping for faster lookup
+        space = self.env.action_space
+        if isinstance(space, gym.spaces.Dict):
+            space = space.get("binary")
+        if isinstance(space, gym.spaces.Discrete):
+            self._vizdoom_vector_map = {
+                tuple(combo): i for i, combo in enumerate(self.env.unwrapped.button_map)
+            }
+        else:
+            self._vizdoom_vector_map = None
+
         return {k: v for k, v in mapping.items() if v is not None}
 
     def _get_atari_action(self):
@@ -349,12 +361,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
             binary_space = space.get("binary")
             continuous_space = space.get("continuous")
             if isinstance(binary_space, gym.spaces.Discrete):
-                idx = 0
-                for i, combo in enumerate(self.env.unwrapped.button_map):
-                    if np.array_equal(combo, action):
-                        idx = i
-                        break
-                binary_action = idx
+                if self._vizdoom_vector_map is None:
+                    self._vizdoom_vector_map = {
+                        tuple(c): i for i, c in enumerate(self.env.unwrapped.button_map)
+                    }
+                binary_action = self._vizdoom_vector_map.get(tuple(action), 0)
             else:
                 binary_action = action
 
@@ -365,10 +376,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
             return {"binary": binary_action}
 
         if isinstance(space, gym.spaces.Discrete):
-            for i, combo in enumerate(self.env.unwrapped.button_map):
-                if np.array_equal(combo, action):
-                    return i
-            return 0
+            if self._vizdoom_vector_map is None:
+                self._vizdoom_vector_map = {
+                    tuple(c): i for i, c in enumerate(self.env.unwrapped.button_map)
+                }
+            return self._vizdoom_vector_map.get(tuple(action), 0)
 
         return action
 
