@@ -1,8 +1,6 @@
 - Add dataset streaming support
 - Add Doom WAD support
-- Add support for listing available environments (command line)
 - Add dataset streaming support
-- Add auto dataset card generation
 - Use JPEG + cv2.imwrite for speed
 - Add "timestamp" and "env_id" to dataset schema
 - Add validation for dataset fields
