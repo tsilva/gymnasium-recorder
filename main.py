@@ -317,7 +317,8 @@ def create_env(env_id):
         env._stable_retro = True
     elif "Vizdoom" in env_id:
         from vizdoom import gymnasium_wrapper
-        env = gym.make(env_id, render_mode="rgb_array")
+        # allow pressing multiple buttons at once for smoother control
+        env = gym.make(env_id, render_mode="rgb_array", max_buttons_pressed=4)
         env._vizdoom = True
     # Otherwise use ale_py
     else:
