@@ -816,8 +816,12 @@ async def main():
         final_dataset = (
             concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
         )
-        final_dataset.push_to_hub(hf_repo_id)
-        generate_dataset_card(final_dataset, env_id, hf_repo_id)
+        upload = input("Upload dataset to Hugging Face Hub? [Y/n] ").strip().lower()
+        if upload in ("", "y", "yes"):
+            final_dataset.push_to_hub(hf_repo_id)
+            generate_dataset_card(final_dataset, env_id, hf_repo_id)
+        else:
+            print("Skipping upload. Dataset was not pushed to the hub.")
     elif args.command == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)

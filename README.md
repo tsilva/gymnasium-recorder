@@ -63,7 +63,7 @@ When a recording starts, the first game frame is shown with a translucent
 overlay asking you to press <kbd>SPACE</kbd>. This lets you focus the window
 before gameplay begins.
 
-Press `ESC` at any time to stop playing and automatically upload the frames recorded so far. If you want to exit without uploading you can press `Ctrl+C` instead. The session will be automatically saved as a dataset and uploaded to Hugging Face Hub if you've provided a token.
+Press `ESC` at any time to stop playing. After the recording finishes you will be asked if you want to upload the dataset to Hugging Face Hub (default **Y**). Press `Ctrl+C` to exit immediately without saving or uploading.
 
 ### Replaying a recorded session
 
