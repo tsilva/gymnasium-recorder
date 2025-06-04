@@ -560,40 +560,90 @@ def get_default_fps(env):
 
     return 15
 
+def list_environments():
+    """Print available Atari, stable-retro and VizDoom environments."""
+    print("=== Atari Environments ===")
+    try:
+        import ale_py
+        gym.register_envs(ale_py)
+        atari_ids = sorted(
+            env_id for env_id in gym.envs.registry.keys() if env_id.startswith("ALE/")
+        )
+        for env_id in atari_ids:
+            print(env_id)
+    except Exception as e:
+        print(f"Could not list Atari environments: {e}")
+
+    try:
+        import retro
+        games = sorted(retro.data.list_games())
+        if games:
+            print("\n=== Stable-Retro Games ===")
+            for game in games:
+                print(game)
+        else:
+            print("\nStable-Retro installed but no ROMs imported.")
+    except Exception:
+        print("\nStable-Retro not installed.")
+
+    try:
+        import vizdoom
+        import vizdoom.gymnasium_wrapper  # register gym environments
+        vizdoom_ids = [
+            env_id for env_id in gym.envs.registry.keys() if env_id.startswith("Vizdoom")
+        ]
+        if vizdoom_ids:
+            print("\n=== VizDoom Environments ===")
+            for env_id in vizdoom_ids:
+                print(env_id)
+        if getattr(vizdoom, "wads", None):
+            print("\nAvailable WADs:")
+            for wad in vizdoom.wads:
+                print(wad)
+    except Exception:
+        print("\nVizDoom not installed.")
+
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
-    parser.add_argument("mode", type=str, choices=["record", "playback"], help="Mode of operation: 'record' or 'playback'")
-    parser.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
-    parser.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    parser_record = subparsers.add_parser("record", help="Record gameplay")
+    parser_record.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser_record.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+
+    parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
+    parser_playback.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser_playback.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+
+    subparsers.add_parser("list_environments", help="List available environments")
+
     args = parser.parse_args()
+
+    if args.command == "list_environments":
+        list_environments()
+        return
 
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
     try:
         loaded_dataset = load_dataset(hf_repo_id, split="train")
-        # older versions stored actions as integers; normalize to list format
         if isinstance(loaded_dataset.features["action"], Value):
-            loaded_dataset = loaded_dataset.map(
-                lambda row: {"action": [row["action"]]}
-            )
-            loaded_dataset = loaded_dataset.cast_column(
-                "action", Sequence(Value("int64"))
-            )
+            loaded_dataset = loaded_dataset.map(lambda row: {"action": [row["action"]]})
+            loaded_dataset = loaded_dataset.cast_column("action", Sequence(Value("int64")))
     except Exception:
         loaded_dataset = None
 
-    # Create the environment early so we can query its metadata
     env = create_env(env_id)
-
-    # Determine FPS: use user value if set, otherwise use default for env
     fps = args.fps if args.fps is not None else get_default_fps(env)
 
-    if args.mode == "record":
+    if args.command == "record":
         recorder = DatasetRecorderWrapper(env)
         recorded_dataset = await recorder.record(fps=fps)
-        final_dataset = concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
+        final_dataset = (
+            concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
+        )
         final_dataset.push_to_hub(hf_repo_id)
-    elif args.mode == "playback":
+    elif args.command == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)
         actions = loaded_dataset["action"]
