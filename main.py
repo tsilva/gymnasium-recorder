@@ -13,7 +13,7 @@ import argparse
 from tqdm import tqdm
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)  # Load environment variables from .env file
 
 import gymnasium as gym
 
