@@ -11,7 +11,7 @@
 
 gymnasium-recorder is a tool that wraps [Gymnasium ALE environments](https://ale.farama.org/environments/) (specifically Atari games) to record gameplay sessions as datasets. It captures frames and actions during interactive play, saving them as structured datasets that can be uploaded to Hugging Face Hub.
 
-The resulting dataset includes the columns `episode_id`, `env_id`, `timestamp`, `step`, `action`, and `image`.
+The resulting dataset includes the columns `episode_id`, `timestamp`, `step`, `action`, and `image`.
 
 Frames are stored as JPEG images using OpenCV for faster write performance.
 
