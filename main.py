@@ -224,7 +224,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.frames = []
         self.actions = []
         self.steps = []
-        self.env_ids = []
         self.timestamps = []
 
         self.temp_dir = tempfile.mkdtemp()
@@ -265,7 +264,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
-        self.env_ids.append(self.env.spec.id if self.env and self.env.spec else "unknown")
         self.timestamps.append(time.time())
         # Normalize action format for dataset storage
         if isinstance(action, np.ndarray):
@@ -482,7 +480,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
             await self.play(fps=fps)
             data = {
                 "episode_id": self.episode_ids,
-                "env_id": self.env_ids,
                 "timestamp": self.timestamps,
                 "image": self.frames,
                 "step": self.steps,
@@ -512,7 +509,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.frames.clear()
         self.actions.clear()
         self.steps.clear()
-        self.env_ids.clear()
         self.timestamps.clear()
 
         episode_id = int(time.time())
@@ -622,6 +618,8 @@ def generate_dataset_card(dataset, env_id, repo_id):
         f"# {card_data.pretty_name}",
         "",
         dataset_summary,
+        "",
+        f"Environment ID: `{env_id}`",
         "",
         "## Dataset Structure",
         dataset_structure,
