@@ -36,7 +36,9 @@ cp .env.example .env
 python main.py record BreakoutNoFrameskip-v4
 ```
 
-This will open a pygame window where you can play Breakout. Use the following controls:
+This will open a pygame window where you can play Breakout. The tool reads the
+framerate from the environment's metadata so the game runs close to the original
+console speed (you can override it with ``--fps``). Use the following controls:
 - Space: Action 1
 - Right Arrow: Action 2
 - Left Arrow: Action 3

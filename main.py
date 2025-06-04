@@ -381,14 +381,17 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
 
-    async def record(self, fps=30):
+    async def record(self, fps=None):
+        """Record a gameplay session at the desired FPS."""
+        if fps is None:
+            fps = get_default_fps(self.env)
         self.recording = True
         try: return await self._record(fps=fps)
         finally: self.recording = False
 
-    async def _record(self, fps=30):
+    async def _record(self, fps=None):
         self.recording = True
-        try: 
+        try:
             await self.play(fps=fps)
             features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64"), "action": Sequence(Value("int64"))})
             data = {"episode_id" : self.episode_ids, "image": self.frames, "step" : self.steps, "action": self.actions}
@@ -397,14 +400,18 @@ class DatasetRecorderWrapper(gym.Wrapper):
         finally: 
             self.recording = False
 
-    async def play(self, fps=30):
+    async def play(self, fps=None):
+        if fps is None:
+            fps = get_default_fps(self.env)
         try: await self._play(fps)
         finally: self.close()
 
-    async def _play(self, fps=30):
+    async def _play(self, fps=None):
         """
         Main loop for interactive gameplay and recording.
         """
+        if fps is None:
+            fps = get_default_fps(self.env)
         clock = pygame.time.Clock()
         
         self.episode_ids.clear()
@@ -429,7 +436,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
             await asyncio.sleep(1.0 / fps)
             step += 1 
 
-    async def replay(self, actions, fps=30):
+    async def replay(self, actions, fps=None):
+        if fps is None:
+            fps = get_default_fps(self.env)
         clock = pygame.time.Clock()
         obs, _ = self.env.reset()
         self._ensure_screen(obs)
@@ -499,11 +508,26 @@ def create_env(env_id):
     env._env_id = env_id.replace("-", "_")
     return env
 
-def get_default_fps(env_id):
-    """
-    Return a sensible default FPS for the given environment.
-    """
-    # NES and most retro consoles: 60 FPS
+def get_default_fps(env):
+    """Determine a sensible default FPS for an environment."""
+
+    # First try to read FPS information from the environment metadata. This is
+    # provided by most Gymnasium environments.  gym-retro/stable-retro exposes
+    # the console framerate under ``video.frames_per_second`` while Atari/VizDoom
+    # and others use ``render_fps``.
+    for key in ("render_fps", "video.frames_per_second"):
+        fps = env.metadata.get(key)
+        if fps:
+            try:
+                return int(round(float(fps)))
+            except (TypeError, ValueError):
+                pass
+
+    # Fall back to heuristics based on the environment id when metadata is not
+    # available.  These values are approximate but keep gameplay reasonable.
+    env_id = getattr(env, "_env_id", "")
+
+    # Some retro consoles commonly run at 60 FPS
     retro_platforms_60fps = {
         "Nes",
         "GameBoy",
@@ -518,20 +542,16 @@ def get_default_fps(env_id):
         "GameGear",
         "SCD",
     }
-    # Atari 2600: 60 FPS (but Gymnasium ALE often uses 15 or 30 for human play)
-    if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps):
+    if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps) or "Atari2600" in env_id:
         return 60
-    if "Atari2600" in env_id:
-        return 60
-    # Gymnasium ALE Atari: 15 FPS is common for human play
-    if "NoFrameskip" in env_id or "ALE" in env_id or env_id.lower() in [
-        "breakout", "pong", "spaceinvaders", "seaquest", "qbert", "ms_pacman"
-    ]:
-        return 15
-    # VizDoom: 35 FPS is the engine's default
+
     if "Vizdoom" in env_id or "vizdoom" in env_id:
         return 35
-    # Default fallback
+
+    # Atari via ALE is often played at a reduced 15 FPS for humans
+    if "NoFrameskip" in env_id or "ALE" in env_id:
+        return 15
+
     return 15
 
 async def main():
@@ -556,18 +576,19 @@ async def main():
     except Exception:
         loaded_dataset = None
 
+    # Create the environment early so we can query its metadata
+    env = create_env(env_id)
+
     # Determine FPS: use user value if set, otherwise use default for env
-    fps = args.fps if args.fps is not None else get_default_fps(env_id)
+    fps = args.fps if args.fps is not None else get_default_fps(env)
 
     if args.mode == "record":
-        env = create_env(env_id)
         recorder = DatasetRecorderWrapper(env)
         recorded_dataset = await recorder.record(fps=fps)
         final_dataset = concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
         final_dataset.push_to_hub(hf_repo_id)
     elif args.mode == "playback":
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
-        env = create_env(env_id)
         recorder = DatasetRecorderWrapper(env)
         actions = loaded_dataset["action"]
         await recorder.replay(actions, fps=fps)
