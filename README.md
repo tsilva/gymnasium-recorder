@@ -49,6 +49,10 @@ For VizDoom environments the keys are mapped automatically so that:
 - Spacebar performs the `USE` action (open doors, switches)
 - Number keys 1–7 select weapons if available
 
+Key mappings for Atari, VizDoom and stable-retro environments are now
+configured through a shared data structure in `main.py`. Edit the mapping
+there if you want to customize controls for a specific game.
+
 You can hold multiple direction keys together to combine actions (for example,
 Up + Right to move forward while turning). Running, strafing and firing can also
 be combined with movement.

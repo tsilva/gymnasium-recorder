@@ -6,6 +6,8 @@ import pygame
 import threading
 import asyncio
 import tempfile
+from dataclasses import dataclass
+from typing import Callable, Dict, Iterable, Optional
 from PIL import Image as PILImage
 from datasets import Dataset, Features, Value, Sequence, Image as HFImage, load_dataset, concatenate_datasets
 from huggingface_hub import whoami
@@ -18,6 +20,165 @@ load_dotenv()
 import gymnasium as gym
 
 REPO_PREFIX = "GymnasiumRecording__"
+
+# ---------------------------------------------------------------------------
+# Key mapping utilities
+# ---------------------------------------------------------------------------
+
+ATARI_KEY_CONFIG = {
+    "type": "discrete",
+    "noop": 0,
+    "mapping": {
+        pygame.K_UP: 1,
+        pygame.K_RIGHT: 2,
+        pygame.K_LEFT: 3,
+        pygame.K_DOWN: 4,
+    },
+}
+
+STABLE_RETRO_KEY_CONFIG = {
+    "type": "multibinary",
+    # Size will be determined from the env.action_space
+    "size": lambda env: env.action_space.n,
+    "mapping": {
+        pygame.K_z: 0,        # A
+        pygame.K_q: 2,        # SELECT
+        pygame.K_r: 3,        # START
+        pygame.K_UP: 4,
+        pygame.K_DOWN: 5,
+        pygame.K_LEFT: 6,
+        pygame.K_RIGHT: 7,
+        pygame.K_x: 8,        # B
+    },
+}
+
+VIZDOOM_KEY_CONFIG = {
+    "type": "vizdoom",
+    "mapping": {
+        pygame.K_UP: "MOVE_FORWARD",
+        pygame.K_DOWN: "MOVE_BACKWARD",
+        pygame.K_LSHIFT: "SPEED",
+        pygame.K_RSHIFT: "SPEED",
+        pygame.K_LCTRL: "ATTACK",
+        pygame.K_RCTRL: "ATTACK",
+        pygame.K_SPACE: "USE",
+        pygame.K_1: "SELECT_WEAPON1",
+        pygame.K_2: "SELECT_WEAPON2",
+        pygame.K_3: "SELECT_WEAPON3",
+        pygame.K_4: "SELECT_WEAPON4",
+        pygame.K_5: "SELECT_WEAPON5",
+        pygame.K_6: "SELECT_WEAPON6",
+        pygame.K_7: "SELECT_WEAPON7",
+    },
+}
+
+
+class KeyMapper:
+    """Helper class to map pressed keys to environment actions."""
+
+    def __init__(self, env, config: Optional[Dict] = None):
+        self.env = env
+        self.config = config or self._default_config()
+        self._vizdoom_buttons: Optional[Dict[str, int]] = None
+
+    # -------------------------------------------------------
+    # Config helpers
+    # -------------------------------------------------------
+    def _default_config(self) -> Dict:
+        if getattr(self.env, "_vizdoom", False):
+            return VIZDOOM_KEY_CONFIG
+        if getattr(self.env, "_stable_retro", False):
+            return STABLE_RETRO_KEY_CONFIG
+        return ATARI_KEY_CONFIG
+
+    # -------------------------------------------------------
+    # Discrete environments (Atari)
+    # -------------------------------------------------------
+    def _discrete_action(self, pressed: Iterable[int]):
+        for key in pressed:
+            if key in self.config["mapping"]:
+                return self.config["mapping"][key]
+        return self.config.get("noop", 0)
+
+    # -------------------------------------------------------
+    # MultiBinary environments (stable-retro)
+    # -------------------------------------------------------
+    def _multibinary_action(self, pressed: Iterable[int]):
+        size = self.config["size"](self.env) if callable(self.config["size"]) else self.config["size"]
+        action = np.zeros(size, dtype=np.int32)
+        for key in pressed:
+            idx = self.config["mapping"].get(key)
+            if idx is not None and idx < size:
+                action[idx] = 1
+        return action
+
+    # -------------------------------------------------------
+    # VizDoom environments
+    # -------------------------------------------------------
+    def _init_vizdoom_key_mapping(self):
+        available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
+
+        def idx(name):
+            return available.index(name) if name in available else None
+
+        mapping = {
+            "ATTACK": idx("ATTACK"),
+            "USE": idx("USE"),
+            "MOVE_LEFT": idx("MOVE_LEFT"),
+            "MOVE_RIGHT": idx("MOVE_RIGHT"),
+            "MOVE_FORWARD": idx("MOVE_FORWARD"),
+            "MOVE_BACKWARD": idx("MOVE_BACKWARD"),
+            "TURN_LEFT": idx("TURN_LEFT"),
+            "TURN_RIGHT": idx("TURN_RIGHT"),
+            "SPEED": idx("SPEED"),
+        }
+
+        for i in range(1, 8):
+            mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
+
+        return {k: v for k, v in mapping.items() if v is not None}
+
+    def _vizdoom_action(self, pressed: Iterable[int]):
+        if self._vizdoom_buttons is None:
+            self._vizdoom_buttons = self._init_vizdoom_key_mapping()
+        n_buttons = self.env.unwrapped.num_binary_buttons
+        action = np.zeros(n_buttons, dtype=np.int32)
+
+        alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
+
+        def press(name: str):
+            idx = self._vizdoom_buttons.get(name)
+            if idx is not None and idx < n_buttons:
+                action[idx] = 1
+
+        for key in pressed:
+            if key == pygame.K_LEFT:
+                press("MOVE_LEFT" if alt else "TURN_LEFT")
+            elif key == pygame.K_RIGHT:
+                press("MOVE_RIGHT" if alt else "TURN_RIGHT")
+            else:
+                name = self.config["mapping"].get(key)
+                if name is None:
+                    continue
+                names = [name] if isinstance(name, str) else name
+                for n in names:
+                    press(n)
+
+        for i, combo in enumerate(self.env.unwrapped.button_map):
+            if np.array_equal(combo, action):
+                return i
+        return 0
+
+    # -------------------------------------------------------
+    def get_action(self, pressed: Iterable[int]):
+        typ = self.config["type"]
+        if typ == "discrete":
+            return self._discrete_action(pressed)
+        if typ == "multibinary":
+            return self._multibinary_action(pressed)
+        if typ == "vizdoom":
+            return self._vizdoom_action(pressed)
+        raise ValueError(f"Unknown key mapping type: {typ}")
 
 class DatasetRecorderWrapper(gym.Wrapper):
     """
@@ -35,14 +196,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
-        self.key_to_action = {
-            pygame.K_UP: 1,
-            pygame.K_RIGHT: 2,
-            pygame.K_LEFT: 3,
-            pygame.K_DOWN: 4,
-        }
-        self._vizdoom_buttons = None
-        self.noop_action = 0
+        self.key_mapper = KeyMapper(env)
 
         self.episode_ids = []
         self.frames = []
@@ -101,113 +255,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 with self.key_lock: self.current_keys.discard(event.key)
         return True
 
-    def _init_vizdoom_key_mapping(self):
-        """Map important action names to their button indices."""
-        available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
-
-        def idx(name):
-            return available.index(name) if name in available else None
-
-        mapping = {
-            "ATTACK": idx("ATTACK"),
-            "USE": idx("USE"),
-            "MOVE_LEFT": idx("MOVE_LEFT"),
-            "MOVE_RIGHT": idx("MOVE_RIGHT"),
-            "MOVE_FORWARD": idx("MOVE_FORWARD"),
-            "MOVE_BACKWARD": idx("MOVE_BACKWARD"),
-            "TURN_LEFT": idx("TURN_LEFT"),
-            "TURN_RIGHT": idx("TURN_RIGHT"),
-            "SPEED": idx("SPEED"),
-        }
-
-        for i in range(1, 8):
-            mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
-
-        return {k: v for k, v in mapping.items() if v is not None}
 
     def _get_user_action(self):
         """
         Map pressed keys to actions, handling Atari (Discrete), stable-retro (MultiBinary), and VizDoom (MultiBinary) environments.
         """
         with self.key_lock:
-            if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                if self._vizdoom_buttons is None:
-                    self._vizdoom_buttons = self._init_vizdoom_key_mapping()
-                n_buttons = self.env.unwrapped.num_binary_buttons
-                action = np.zeros(n_buttons, dtype=np.int32)
-
-                pressed = self.current_keys
-                alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
-
-                def press(name):
-                    idx = self._vizdoom_buttons.get(name)
-                    if idx is not None and idx < n_buttons:
-                        action[idx] = 1
-
-                if pygame.K_UP in pressed:
-                    press("MOVE_FORWARD")
-                if pygame.K_DOWN in pressed:
-                    press("MOVE_BACKWARD")
-
-                if pygame.K_LEFT in pressed:
-                    press("MOVE_LEFT" if alt else "TURN_LEFT")
-                if pygame.K_RIGHT in pressed:
-                    press("MOVE_RIGHT" if alt else "TURN_RIGHT")
-
-                if pygame.K_LSHIFT in pressed or pygame.K_RSHIFT in pressed:
-                    press("SPEED")
-                if pygame.K_LCTRL in pressed or pygame.K_RCTRL in pressed:
-                    press("ATTACK")
-                if pygame.K_SPACE in pressed:
-                    press("USE")
-
-                for i in range(1, 8):
-                    key_const = getattr(pygame, f"K_{i}")
-                    if key_const in pressed:
-                        press(f"SELECT_WEAPON{i}")
-
-                for i, combo in enumerate(self.env.unwrapped.button_map):
-                    if np.array_equal(combo, action):
-                        return i
-                return 0
-            # ...existing code for stable-retro...
-            if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
-                # SuperMarioBros-Nes: MultiBinary(8) action space
-                action = np.zeros(self.env.action_space.n, dtype=np.int32)  # [B, Select, Start, Up, Down, Left, Right, A]
-                #['B', None, 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A']
-
-                # @tsilva HACK: clean this up
-                for key in self.current_keys:
-                    if key == pygame.K_z:  # A
-                        action[0] = 1
-                    elif key == pygame.K_q:  # SELECT
-                        action[2] = 1
-                    if key == pygame.K_r:  # START
-                        action[3] = 1
-                    elif key == pygame.K_UP:  
-                        action[4] = 1
-                    elif key == pygame.K_DOWN: 
-                        action[5] = 1
-                    elif key == pygame.K_LEFT:   
-                        action[6] = 1
-                    elif key == pygame.K_RIGHT: 
-                        action[7] = 1
-                    if key == pygame.K_x:  # B
-                        action[8] = 1
-
-                #import numpy as np
-
-                #action[0] = 1
-                #action[7] = 1
-                #action[8] = 1
-
-                return action
-            else:
-                # Atari: Discrete action space
-                for key in self.current_keys:
-                    if key in self.key_to_action:
-                        return self.key_to_action[key]
-                return self.noop_action
+            pressed = set(self.current_keys)
+        return self.key_mapper.get_action(pressed)
 
     def _render_frame(self, frame):
         """
