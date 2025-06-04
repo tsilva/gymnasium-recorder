@@ -13,7 +13,7 @@ import argparse
 from tqdm import tqdm
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)  # Load environment variables from .env file
 
 import gymnasium as gym
 
@@ -174,10 +174,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     if key_const in pressed:
                         press(f"SELECT_WEAPON{i}")
 
-                for i, combo in enumerate(self.env.unwrapped.button_map):
-                    if np.array_equal(combo, action):
-                        return i
-                return 0
+                # If env expects discrete actions, map button vector to index
+                if isinstance(self.env.action_space, gym.spaces.Discrete):
+                    for i, combo in enumerate(self.env.unwrapped.button_map):
+                        if np.array_equal(combo, action):
+                            return i
+                    return 0
+                # Otherwise return the raw MultiBinary action vector
+                return action
             # ...existing code for stable-retro...
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
                 # SuperMarioBros-Nes: MultiBinary(8) action space
@@ -332,8 +336,8 @@ def create_env(env_id):
         env._stable_retro = True
     elif "Vizdoom" in env_id:
         from vizdoom import gymnasium_wrapper
-        # allow pressing multiple buttons at once for smoother control
-        env = gym.make(env_id, render_mode="rgb_array", max_buttons_pressed=4)
+        # use MultiBinary actions to avoid losing button presses
+        env = gym.make(env_id, render_mode="rgb_array", max_buttons_pressed=0)
         env._vizdoom = True
     # Otherwise use ale_py
     else:
