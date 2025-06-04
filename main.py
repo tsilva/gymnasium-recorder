@@ -262,6 +262,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
         # Normalize action format for dataset storage
         if isinstance(action, np.ndarray):
             action = action.tolist()
+        elif isinstance(action, dict):
+            action = {
+                k: (v.tolist() if isinstance(v, np.ndarray) else v)
+                for k, v in action.items()
+            }
         else:
             action = [int(action)]
         self.actions.append(action)
@@ -422,9 +427,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.recording = True
         try:
             await self.play(fps=fps)
-            features = Features({"episode_id": Value("int64"), "image": HFImage(), "step": Value("int64"), "action": Sequence(Value("int64"))})
-            data = {"episode_id" : self.episode_ids, "image": self.frames, "step" : self.steps, "action": self.actions}
-            dataset = Dataset.from_dict(data, features=features)
+            data = {
+                "episode_id": self.episode_ids,
+                "image": self.frames,
+                "step": self.steps,
+                "action": self.actions,
+            }
+            dataset = Dataset.from_dict(data)
+            dataset = dataset.cast_column("image", HFImage())
             return dataset
         finally: 
             self.recording = False
@@ -473,13 +483,27 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._ensure_screen(obs)
         self._render_frame(obs)
         for action in tqdm(actions):
-            # Actions may be stored as lists in the dataset, convert back to the
-            # environment's expected format
+            # Convert stored actions back to the environment's expected format
             if isinstance(action, list):
                 if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
                     action = action[0]
                 else:
                     action = np.array(action, dtype=np.int32)
+            elif isinstance(action, dict):
+                new_action = {}
+                space = self.env.action_space
+                if isinstance(space, gym.spaces.Dict):
+                    for k, v in action.items():
+                        sub = space[k]
+                        if isinstance(v, list):
+                            new_action[k] = np.array(v, dtype=sub.dtype)
+                        else:
+                            new_action[k] = v
+                    action = new_action
+                else:
+                    for k, v in action.items():
+                        new_action[k] = np.array(v) if isinstance(v, list) else v
+                    action = new_action
             obs, _, _, _, _ = self.env.step(action)
             self._render_frame(obs)
             clock.tick(fps)
