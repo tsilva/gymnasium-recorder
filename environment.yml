@@ -15,3 +15,4 @@ dependencies:
       - gymnasium[atari]
       - gymnasium[vizdoom]
       - datasets
+      - opencv-python

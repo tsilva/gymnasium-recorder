@@ -13,6 +13,8 @@ gymnasium-recorder is a tool that wraps [Gymnasium ALE environments](https://ale
 
 The resulting dataset includes the columns `episode_id`, `env_id`, `timestamp`, `step`, `action`, and `image`.
 
+Frames are stored as JPEG images using OpenCV for faster write performance.
+
 The tool provides a pygame interface for playing Atari games while recording your actions, making it easy to create training datasets for reinforcement learning models. It also supports replaying recorded sessions to verify environment determinism.
 
 ## 🚀 Installation
