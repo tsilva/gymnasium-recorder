@@ -7,7 +7,7 @@
   [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
   [![Hugging Face](https://img.shields.io/badge/HuggingFace-Datasets-yellow.svg)](https://huggingface.co/docs/datasets)
 
-  **🎮 Record and replay gameplay from Gymnasium environments as Hugging Face datasets**
+  **🎮 Record and replay gameplay from Gymnasium environments as Hugging Face datasets 📊**
 
   [Features](#features) · [Quick Start](#quick-start) · [Usage](#usage) · [Supported Environments](#supported-environments)
 </div>
