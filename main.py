@@ -575,11 +575,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         surface = pygame.surfarray.make_surface(frame.transpose(1, 0, 2))
 
         scale = CONFIG["display"]["scale_factor"]
-        if scale == 2:
-            scaled_surface = pygame.transform.scale2x(surface)
-        else:
-            w, h = surface.get_size()
-            scaled_surface = pygame.transform.scale(surface, (w * scale, h * scale))
+        w, h = surface.get_size()
+        scaled_surface = pygame.transform.scale(surface, (w * scale, h * scale))
 
         # Update display with scaled frame
         self.screen.blit(scaled_surface, (0, 0))
