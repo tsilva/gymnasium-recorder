@@ -841,7 +841,38 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 step = 0
                 self._render_frame(obs)
 
-    async def replay(self, actions, fps=None, total=None):
+    def _extract_obs_image(self, obs):
+        """Extract image array from observation, handling dict obs (e.g. VizDoom)."""
+        if isinstance(obs, dict):
+            for k in ["obs", "image", "screen"]:
+                if k in obs:
+                    return obs[k]
+        return obs
+
+    def _convert_action(self, action):
+        """Convert stored action back to the environment's expected format."""
+        if isinstance(action, list):
+            if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
+                return action[0]
+            else:
+                return np.array(action, dtype=np.int32)
+        elif isinstance(action, dict):
+            new_action = {}
+            space = self.env.action_space
+            if isinstance(space, gym.spaces.Dict):
+                for k, v in action.items():
+                    sub = space[k]
+                    if isinstance(v, list):
+                        new_action[k] = np.array(v, dtype=sub.dtype)
+                    else:
+                        new_action[k] = v
+            else:
+                for k, v in action.items():
+                    new_action[k] = np.array(v) if isinstance(v, list) else v
+            return new_action
+        return action
+
+    async def replay(self, actions, fps=None, total=None, verify=False):
         if fps is None:
             fps = get_default_fps(self.env)
         self._fps = fps
@@ -849,38 +880,82 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._ensure_screen(obs)
         self._render_frame(obs)
         self._print_keymappings()
-        for action in tqdm(actions, total=total):
+
+        mse_threshold = 5.0
+        verify_metrics = [] if verify else None
+        reward_mismatches = 0
+        terminal_mismatches = 0
+
+        for item in tqdm(actions, total=total):
             frame_start = time.monotonic()
             if not self._input_loop(): break
-            # Convert stored actions back to the environment's expected format
-            if isinstance(action, list):
-                if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
-                    action = action[0]
-                else:
-                    action = np.array(action, dtype=np.int32)
-            elif isinstance(action, dict):
-                new_action = {}
-                space = self.env.action_space
-                if isinstance(space, gym.spaces.Dict):
-                    for k, v in action.items():
-                        sub = space[k]
-                        if isinstance(v, list):
-                            new_action[k] = np.array(v, dtype=sub.dtype)
-                        else:
-                            new_action[k] = v
-                    action = new_action
-                else:
-                    for k, v in action.items():
-                        new_action[k] = np.array(v) if isinstance(v, list) else v
-                    action = new_action
-            obs, _, _, _, _ = self.env.step(action)
+
+            if verify:
+                action, recorded_image, recorded_reward, recorded_terminated, recorded_truncated = item
+            else:
+                action = item
+
+            action = self._convert_action(action)
+            obs, reward, terminated, truncated, _ = self.env.step(action)
             self._render_frame(obs)
+
+            if verify:
+                obs_image = self._extract_obs_image(obs)
+                if obs_image.dtype != np.uint8:
+                    obs_image = obs_image.astype(np.uint8)
+                recorded_array = np.array(recorded_image, dtype=np.uint8)
+
+                if obs_image.shape == recorded_array.shape:
+                    mse = float(np.mean((obs_image.astype(np.float32) - recorded_array.astype(np.float32)) ** 2))
+                else:
+                    print(f"\n  Warning: shape mismatch at frame {len(verify_metrics)}: "
+                          f"obs={obs_image.shape} vs recorded={recorded_array.shape}, skipping comparison")
+                    mse = None
+
+                if float(reward) != float(recorded_reward):
+                    reward_mismatches += 1
+                if bool(terminated) != bool(recorded_terminated) or bool(truncated) != bool(recorded_truncated):
+                    terminal_mismatches += 1
+
+                verify_metrics.append(mse)
+
             elapsed = time.monotonic() - frame_start
             remaining = (1.0 / self._fps) - elapsed
             if remaining > 0:
                 await asyncio.sleep(remaining)
             else:
                 await asyncio.sleep(0)
+
+        if verify and verify_metrics:
+            valid_mses = [m for m in verify_metrics if m is not None]
+            n_total = len(verify_metrics)
+            n_skipped = n_total - len(valid_mses)
+
+            print("\n=== Determinism Verification Report ===")
+            print(f"Total frames: {n_total}")
+            if n_skipped > 0:
+                print(f"Skipped (shape mismatch): {n_skipped}")
+            if valid_mses:
+                mean_mse = sum(valid_mses) / len(valid_mses)
+                max_mse = max(valid_mses)
+                min_mse = min(valid_mses)
+                exceeded = sum(1 for m in valid_mses if m > mse_threshold)
+                print(f"Frame MSE:  mean={mean_mse:.2f}, max={max_mse:.2f}, min={min_mse:.2f}")
+                print(f"Reward mismatches: {reward_mismatches}/{n_total} frames")
+                print(f"Terminal state mismatches: {terminal_mismatches}/{n_total} frames")
+                if exceeded == 0 and reward_mismatches == 0 and terminal_mismatches == 0:
+                    print(f"Result: PASS (all frames below threshold {mse_threshold})")
+                else:
+                    reasons = []
+                    if exceeded > 0:
+                        reasons.append(f"{exceeded} frames exceeded MSE threshold {mse_threshold}")
+                    if reward_mismatches > 0:
+                        reasons.append(f"{reward_mismatches} reward mismatches")
+                    if terminal_mismatches > 0:
+                        reasons.append(f"{terminal_mismatches} terminal state mismatches")
+                    print(f"Result: FAIL ({', '.join(reasons)})")
+            else:
+                print("No valid frame comparisons (all skipped).")
 
     def close(self):
         """
@@ -1347,6 +1422,8 @@ async def main():
     parser_playback.add_argument("--scale", type=int, default=None, help="Display scale factor (default: 2)")
     parser_playback.add_argument("--episode", type=str, default="latest",
         help="Episode to play: 'latest' (default), 'all', or episode number (1-based)")
+    parser_playback.add_argument("--verify", action="store_true", default=False,
+        help="Verify determinism by comparing replayed frames against recorded frames (pixel MSE)")
 
     parser_upload = subparsers.add_parser("upload", help="Upload local dataset to Hugging Face Hub")
     parser_upload.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
@@ -1400,7 +1477,6 @@ async def main():
                 info += f", {ep_label}"
             print(f"Playing back from local dataset ({info})")
             total = len(loaded_dataset)
-            actions = (row["action"] for row in loaded_dataset)
         else:
             print("No local dataset found, trying Hugging Face Hub...")
             try:
@@ -1423,9 +1499,16 @@ async def main():
                     total = None
             except Exception:
                 total = None
-            actions = (row["action"] for row in loaded_dataset)
         recorder = DatasetRecorderWrapper(env)
-        await recorder.replay(actions, fps=fps, total=total)
+        if args.verify:
+            recorded_data = (
+                (row["action"], row["image"], row["reward"], row["terminated"], row["truncated"])
+                for row in loaded_dataset
+            )
+            await recorder.replay(recorded_data, fps=fps, total=total, verify=True)
+        else:
+            actions = (row["action"] for row in loaded_dataset)
+            await recorder.replay(actions, fps=fps, total=total)
 
 if __name__ == "__main__":
     asyncio.run(main())
