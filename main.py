@@ -366,14 +366,16 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.noop_action = 0
 
         self.episode_ids = []
+        self.seeds = []
         self.frames = []
         self.actions = []
         self.steps = []
         self.timestamps = []
         self.rewards = []
-        self.terminateds = []
-        self.truncateds = []
+        self.terminations = []
+        self.truncations = []
         self.infos = []
+        self.is_terminal_observations = []
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -401,40 +403,63 @@ class DatasetRecorderWrapper(gym.Wrapper):
             self.screen = pygame.display.set_mode((self.frame_shape[1] * scale, self.frame_shape[0] * scale))
             pygame.display.set_caption(getattr(self.env, "_env_id", "Gymnasium Recorder"))
 
-    def _record_frame(self, episode_id, step, frame, action):
-        """
-        Save a frame and action to temporary storage.
-        """
-        if not self.recording: return
-
-        # If frame is a dict (e.g., VizDoom), extract the image
+    def _save_frame_image(self, frame):
+        """Save a frame as PNG and return the file path."""
         if isinstance(frame, dict):
             for k in ["obs", "image", "screen"]:
                 if k in frame:
                     frame = frame[k]
                     break
-
         frame_uint8 = frame.astype(np.uint8)
         path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
         img = PILImage.fromarray(frame_uint8)
         if img.getcolors(maxcolors=256) is not None:
             img = img.convert("P")
         img.save(path, format="PNG")
-        self.episode_ids.append(episode_id)
-        self.steps.append(step)
-        self.frames.append(path)
-        self.timestamps.append(time.time())
-        # Normalize action format for dataset storage
+        return path
+
+    @staticmethod
+    def _normalize_action(action):
+        """Normalize action format for dataset storage."""
         if isinstance(action, np.ndarray):
-            action = action.tolist()
+            return action.tolist()
         elif isinstance(action, dict):
-            action = {
+            return {
                 k: (v.tolist() if isinstance(v, np.ndarray) else v)
                 for k, v in action.items()
             }
         else:
-            action = [int(action)]
-        self.actions.append(action)
+            return [int(action)]
+
+    def _record_frame(self, episode_id, seed, step, frame, action):
+        """Save a frame and action to temporary storage."""
+        if not self.recording: return
+
+        path = self._save_frame_image(frame)
+        self.episode_ids.append(episode_id)
+        self.seeds.append(seed)
+        self.steps.append(step)
+        self.frames.append(path)
+        self.timestamps.append(time.time())
+        self.actions.append(self._normalize_action(action))
+        self.is_terminal_observations.append(False)
+
+    def _record_terminal_observation(self, episode_id, seed, step, frame):
+        """Record a terminal observation row (Minari N+1 pattern)."""
+        if not self.recording: return
+
+        path = self._save_frame_image(frame)
+        self.episode_ids.append(episode_id)
+        self.seeds.append(seed)
+        self.steps.append(step)
+        self.frames.append(path)
+        self.timestamps.append(time.time())
+        self.actions.append([])
+        self.rewards.append(0.0)
+        self.terminations.append(False)
+        self.truncations.append(False)
+        self.infos.append(json.dumps({}))
+        self.is_terminal_observations.append(True)
 
     def _input_loop(self):
         """
@@ -887,19 +912,22 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._fps = fps
 
         self.episode_ids.clear()
+        self.seeds.clear()
         self.frames.clear()
         self.actions.clear()
         self.steps.clear()
         self.timestamps.clear()
         self.rewards.clear()
-        self.terminateds.clear()
-        self.truncateds.clear()
+        self.terminations.clear()
+        self.truncations.clear()
         self.infos.clear()
+        self.is_terminal_observations.clear()
 
-        episode_id = int(time.time())
+        episode_id = 0
+        seed = int(time.time())
         self._episode_count = 1
         self._cumulative_reward = 0.0
-        obs, _ = self.env.reset()
+        obs, _ = self.env.reset(seed=seed)
         self._ensure_screen(obs)  # Ensure pygame window is created after first obs
         self._render_frame(obs)
         self._print_keymappings()
@@ -912,13 +940,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
             frame_start = time.monotonic()
             if not self._input_loop(): break
             action = self._get_user_action()
-            self._record_frame(episode_id, step, obs, action)
+            self._record_frame(episode_id, seed, step, obs, action)
             obs, reward, terminated, truncated, info = self.env.step(action)
             self._cumulative_reward += float(reward)
             if self.recording:
                 self.rewards.append(float(reward))
-                self.terminateds.append(bool(terminated))
-                self.truncateds.append(bool(truncated))
+                self.terminations.append(bool(terminated))
+                self.truncations.append(bool(truncated))
                 self.infos.append(json.dumps(info, default=_json_default))
             self._render_frame(obs)
             elapsed = time.monotonic() - frame_start
@@ -930,27 +958,35 @@ class DatasetRecorderWrapper(gym.Wrapper):
             step += 1
 
             if terminated or truncated:
-                obs, _ = self.env.reset()
+                self._record_terminal_observation(episode_id, seed, step, obs)
+                episode_id += 1
+                seed = int(time.time())
+                obs, _ = self.env.reset(seed=seed)
                 self._episode_count += 1
                 self._cumulative_reward = 0.0
-                episode_id = int(time.time())
                 step = 0
                 self._render_frame(obs)
+
+        # Record terminal observation on user exit (ESC)
+        if self.recording and self.frames and not self.is_terminal_observations[-1]:
+            self._record_terminal_observation(episode_id, seed, step, obs)
 
         if self.recording and self.frames:
             data = {
                 "episode_id": self.episode_ids,
+                "seed": self.seeds,
                 "timestamp": self.timestamps,
-                "image": self.frames,
+                "observation": self.frames,
                 "step": self.steps,
                 "action": self.actions,
                 "reward": self.rewards,
-                "terminated": self.terminateds,
-                "truncated": self.truncateds,
+                "termination": self.terminations,
+                "truncation": self.truncations,
                 "info": self.infos,
+                "is_terminal_observation": self.is_terminal_observations,
             }
             self._recorded_dataset = Dataset.from_dict(data)
-            self._recorded_dataset = self._recorded_dataset.cast_column("image", HFImage())
+            self._recorded_dataset = self._recorded_dataset.cast_column("observation", HFImage())
 
     def _extract_obs_image(self, obs):
         """Extract image array from observation, handling dict obs (e.g. VizDoom)."""
@@ -1112,6 +1148,7 @@ def save_dataset_locally(dataset, env_id):
     path = get_local_dataset_path(env_id)
     existing = load_local_dataset(env_id)
     if existing is not None:
+        dataset = _ensure_schema_compat(dataset)
         dataset = concatenate_datasets([existing, dataset])
         # Save to temp dir first to avoid "can't overwrite itself" error
         tmp_path = path + "_tmp"
@@ -1130,7 +1167,24 @@ def load_local_dataset(env_id):
     path = get_local_dataset_path(env_id)
     if not os.path.exists(path):
         return None
-    return load_from_disk(path)
+    ds = load_from_disk(path)
+    return _ensure_schema_compat(ds)
+
+
+def _ensure_schema_compat(dataset):
+    """Migrate old-format datasets to current schema."""
+    cols = dataset.column_names
+    if "image" in cols and "observation" not in cols:
+        dataset = dataset.rename_column("image", "observation")
+    if "terminated" in cols and "termination" not in cols:
+        dataset = dataset.rename_column("terminated", "termination")
+    if "truncated" in cols and "truncation" not in cols:
+        dataset = dataset.rename_column("truncated", "truncation")
+    if "is_terminal_observation" not in cols:
+        dataset = dataset.add_column("is_terminal_observation", [False] * len(dataset))
+    if "seed" not in cols:
+        dataset = dataset.add_column("seed", [0] * len(dataset))
+    return dataset
 
 
 def filter_dataset_by_episode(dataset, episode_arg):
@@ -1236,12 +1290,16 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
         rewards = []
         terminations = []
         truncations = []
+        ep_seed = rows[0].get("seed", 0)
 
         for row in rows:
-            img = row["image"]
+            img = row["observation"]
             if not isinstance(img, np.ndarray):
                 img = np.array(img)
             observations.append(img)
+
+            if row.get("is_terminal_observation", False):
+                continue
 
             action = row["action"]
             if isinstance(action, list) and len(action) == 1:
@@ -1249,16 +1307,17 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
             actions.append(action)
 
             rewards.append(float(row["reward"]))
-            terminations.append(bool(row["terminated"]))
-            truncations.append(bool(row["truncated"]))
+            terminations.append(bool(row["termination"]))
+            truncations.append(bool(row["truncation"]))
 
-        # Minari requires N+1 observations (initial + after each step).
-        # Our dataset stores obs_t (before action) but not the final obs_{N}.
-        # Duplicate the last observation as an approximation.
-        observations.append(observations[-1])
+        # Fallback for old datasets without terminal observation:
+        # duplicate last obs to satisfy Minari N+1 requirement
+        if len(observations) == len(actions):
+            observations.append(observations[-1])
 
         buffers.append(EpisodeBuffer(
             id=ep_idx,
+            seed=ep_seed,
             observations=observations,
             actions=actions,
             rewards=rewards,
@@ -1296,8 +1355,6 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
         f"Episodes: [{STYLE_INFO}]{len(buffers)}[/]",
         f"Total steps: [{STYLE_INFO}]{total_steps}[/]",
         f"Dataset ID: [{STYLE_ENV}]{dataset_name}[/]",
-        "",
-        f"[yellow]Note:[/] Terminal observations are approximated (last obs duplicated).",
         "",
         f"Load with:",
         f"  [{STYLE_CMD}]import minari[/]",
@@ -1378,15 +1435,19 @@ def generate_dataset_card(dataset, env_id, repo_id):
         "",
         "## Dataset Structure",
         "",
-        "- **episode_id** (`int`): Episode identifier",
+        "This dataset follows the [Minari](https://minari.farama.org/) data model (N+1 observations per episode).",
+        "",
+        "- **episode_id** (`int`): Sequential episode identifier (0-based)",
+        "- **seed** (`int`): RNG seed used for `env.reset()`",
         "- **timestamp** (`float`): Unix timestamp of each frame",
-        "- **image** (`Image`): RGB frame from the environment",
+        "- **observation** (`Image`): RGB frame from the environment",
         "- **step** (`int`): Step number within the episode",
-        "- **action** (`int` or `list`): Action taken at this step",
+        "- **action** (`list`): Action taken at this step (empty for terminal observations)",
         "- **reward** (`float`): Reward received",
-        "- **terminated** (`bool`): Whether the episode ended",
-        "- **truncated** (`bool`): Whether the episode was truncated",
+        "- **termination** (`bool`): Whether the episode terminated naturally",
+        "- **truncation** (`bool`): Whether the episode was truncated",
         "- **info** (`str`): Additional environment info (JSON)",
+        "- **is_terminal_observation** (`bool`): Marks the N+1th observation row per episode",
         "",
         "## Usage",
         "",
@@ -1828,12 +1889,16 @@ async def main():
         recorder = DatasetRecorderWrapper(env)
         if args.verify:
             recorded_data = (
-                (row["action"], row["image"], row["reward"], row["terminated"], row["truncated"])
+                (row["action"], row["observation"], row["reward"], row["termination"], row["truncation"])
                 for row in loaded_dataset
+                if not row.get("is_terminal_observation", False)
             )
             await recorder.replay(recorded_data, fps=fps, total=total, verify=True)
         else:
-            actions = (row["action"] for row in loaded_dataset)
+            actions = (
+                row["action"] for row in loaded_dataset
+                if not row.get("is_terminal_observation", False)
+            )
             await recorder.replay(actions, fps=fps, total=total)
 
 if __name__ == "__main__":
