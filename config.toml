@@ -4,15 +4,13 @@
 [display]
 # scale_factor = 2
 
-[recording]
-
 [fps_defaults]
-# atari = 15
-# vizdoom = 35
-# retro = 60
+# atari = 90
+# vizdoom = 45
+# retro = 90
 
 [dataset]
-# repo_prefix = "GymnasiumRecording__"
+# repo_prefix = "gymnasium-recorder__"
 # license = "mit"
 # task_categories = ["reinforcement-learning"]
 # commit_message = "Update dataset card"

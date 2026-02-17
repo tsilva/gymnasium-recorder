@@ -226,7 +226,6 @@ def _load_keymappings(pygame):
 
 DEFAULT_CONFIG = {
     "display": {"scale_factor": 2},
-    "recording": {},
     "fps_defaults": {"atari": 90, "vizdoom": 45, "retro": 90},
     "dataset": {
         "repo_prefix": "gymnasium-recorder__",
@@ -274,7 +273,7 @@ def _lazy_init():
     global CONFIG
     global np, pygame, PILImage
     global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
-    global Dataset, Value, Sequence, HFImage, load_dataset, load_from_disk, load_dataset_builder, concatenate_datasets
+    global Dataset, HFImage, load_dataset, load_from_disk, load_dataset_builder, concatenate_datasets
     global START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS
 
     import numpy as np
@@ -283,8 +282,6 @@ def _lazy_init():
     from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
     from datasets import (
         Dataset,
-        Value,
-        Sequence,
         Image as HFImage,
         load_dataset,
         load_from_disk,
@@ -554,10 +551,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         resolved = {}
         for key, value in self._atari_key_bindings_raw.items():
-            if isinstance(value, int):
-                # Legacy: direct index mapping (from old config files)
-                resolved[key] = value
-            elif isinstance(value, str):
+            if isinstance(value, str):
                 idx = meaning_to_idx.get(value.upper())
                 if idx is not None:
                     resolved[key] = idx
@@ -679,19 +673,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """Map pressed keys to actions for the current environment."""
         with self.key_lock:
             if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-                return self._get_user_action__vizdoom()
+                return self._get_vizdoom_action()
             if hasattr(self.env, '_stable_retro') and self.env._stable_retro:
-                return self._get_user_action__stableretro()
-            return self._get_user_action__alepy()
-
-    def _get_user_action__vizdoom(self):
-        return self._get_vizdoom_action()
-
-    def _get_user_action__stableretro(self):
-        return self._get_stable_retro_action()
-
-    def _get_user_action__alepy(self):
-        return self._get_atari_action()
+                return self._get_stable_retro_action()
+            return self._get_atari_action()
 
     def _render_frame(self, frame):
         """
@@ -887,21 +872,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
         finally: self.recording = False
 
     async def _record(self, fps=None):
-        self.recording = True
         try:
             await self._play(fps)  # bypass play() to avoid premature close()
             return self._recorded_dataset
         except:
             self.close()  # cleanup on error only
             raise
-        finally:
-            self.recording = False
-
-    async def play(self, fps=None):
-        if fps is None:
-            fps = get_default_fps(self.env)
-        try: await self._play(fps)
-        finally: self.close()
 
     async def _play(self, fps=None):
         """
@@ -1148,7 +1124,6 @@ def save_dataset_locally(dataset, env_id):
     path = get_local_dataset_path(env_id)
     existing = load_local_dataset(env_id)
     if existing is not None:
-        dataset = _ensure_schema_compat(dataset)
         dataset = concatenate_datasets([existing, dataset])
         # Save to temp dir first to avoid "can't overwrite itself" error
         tmp_path = path + "_tmp"
@@ -1167,24 +1142,7 @@ def load_local_dataset(env_id):
     path = get_local_dataset_path(env_id)
     if not os.path.exists(path):
         return None
-    ds = load_from_disk(path)
-    return _ensure_schema_compat(ds)
-
-
-def _ensure_schema_compat(dataset):
-    """Migrate old-format datasets to current schema."""
-    cols = dataset.column_names
-    if "image" in cols and "observation" not in cols:
-        dataset = dataset.rename_column("image", "observation")
-    if "terminated" in cols and "termination" not in cols:
-        dataset = dataset.rename_column("terminated", "termination")
-    if "truncated" in cols and "truncation" not in cols:
-        dataset = dataset.rename_column("truncated", "truncation")
-    if "is_terminal_observation" not in cols:
-        dataset = dataset.add_column("is_terminal_observation", [False] * len(dataset))
-    if "seed" not in cols:
-        dataset = dataset.add_column("seed", [0] * len(dataset))
-    return dataset
+    return load_from_disk(path)
 
 
 def filter_dataset_by_episode(dataset, episode_arg):
@@ -1349,7 +1307,7 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
     if observation_space is not None:
         create_kwargs["observation_space"] = observation_space
 
-    minari_ds = minari.create_dataset_from_buffers(**create_kwargs)
+    minari.create_dataset_from_buffers(**create_kwargs)
 
     lines = [
         f"Episodes: [{STYLE_INFO}]{len(buffers)}[/]",
@@ -1509,21 +1467,6 @@ def create_env(env_id):
     env._env_id = env_id.replace("-", "_")
     return env
 
-def _get_default_fps__stableretro(env_id: str) -> int:
-    """Return a default FPS for stable-retro environments."""
-    return CONFIG["fps_defaults"]["retro"]
-
-
-def _get_default_fps__vizdoom(env_id: str) -> int:
-    """Return a default FPS for VizDoom environments."""
-    return CONFIG["fps_defaults"]["vizdoom"]
-
-
-def _get_default_fps__alepy(env_id: str) -> int:
-    """Return a default FPS for Atari environments."""
-    return CONFIG["fps_defaults"]["atari"]
-
-
 def get_frameskip(env) -> int:
     """Detect the frameskip value for an environment.
 
@@ -1587,7 +1530,7 @@ def get_default_fps(env):
     if base_fps is None:
         env_id = getattr(env, "_env_id", "")
 
-        retro_platforms_60fps = {
+        retro_platforms = {
             "Nes",
             "GameBoy",
             "Snes",
@@ -1602,12 +1545,12 @@ def get_default_fps(env):
             "SCD",
         }
 
-        if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps) or "Atari2600" in env_id:
-            base_fps = _get_default_fps__stableretro(env_id)
+        if any(env_id.endswith(f"-{plat}") for plat in retro_platforms) or "Atari2600" in env_id:
+            base_fps = CONFIG["fps_defaults"]["retro"]
         elif "Vizdoom" in env_id or "vizdoom" in env_id:
-            base_fps = _get_default_fps__vizdoom(env_id)
+            base_fps = CONFIG["fps_defaults"]["vizdoom"]
         else:
-            base_fps = _get_default_fps__alepy(env_id)
+            base_fps = CONFIG["fps_defaults"]["atari"]
 
     frameskip = get_frameskip(env)
     if frameskip > 1:
@@ -1748,15 +1691,6 @@ def _list_environments__vizdoom():
     vizdoom_ids = _get_vizdoom_envs()
     if vizdoom_ids:
         lines = list(vizdoom_ids)
-        try:
-            import vizdoom
-            if getattr(vizdoom, "wads", None):
-                lines.append("")
-                lines.append("[bold]Available WADs:[/]")
-                for wad in vizdoom.wads:
-                    lines.append(f"  {wad}")
-        except Exception:
-            pass
         console.print(Panel("\n".join(lines), title="[bold]VizDoom Environments[/]", border_style=STYLE_INFO, expand=False))
     else:
         console.print(Panel("[dim]VizDoom not installed.[/]", title="[bold]VizDoom Environments[/]", border_style=STYLE_INFO, expand=False))
@@ -1769,7 +1703,7 @@ def list_environments():
     _list_environments__vizdoom()
 
 async def main():
-    parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
+    parser = argparse.ArgumentParser(description="Gymnasium Recorder/Playback")
     subparsers = parser.add_subparsers(dest="command")
 
     parser_record = subparsers.add_parser("record", help="Record gameplay")
