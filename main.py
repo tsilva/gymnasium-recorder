@@ -194,7 +194,7 @@ def _load_keymappings(pygame):
 DEFAULT_CONFIG = {
     "display": {"scale_factor": 2},
     "recording": {"jpeg_quality": 95},
-    "fps_defaults": {"atari": 15, "vizdoom": 35, "retro": 60},
+    "fps_defaults": {"atari": 60, "vizdoom": 35, "retro": 60},
     "dataset": {
         "repo_prefix": "GymnasiumRecording__",
         "license": "mit",
@@ -610,8 +610,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         if fps is None:
             fps = get_default_fps(self.env)
-        clock = pygame.time.Clock()
-        
+        target_frame_time = 1.0 / fps
+
         self.episode_ids.clear()
         self.frames.clear()
         self.actions.clear()
@@ -630,25 +630,31 @@ class DatasetRecorderWrapper(gym.Wrapper):
         done = False
         step = 0
         while not done:
+            frame_start = time.monotonic()
             if not self._input_loop(): break
             action = self._get_user_action()
             self._record_frame(episode_id, step, obs, action)
             obs, _, terminated, truncated, _ = self.env.step(action)
             done = terminated or truncated
             self._render_frame(obs)
-            clock.tick(fps)
-            await asyncio.sleep(1.0 / fps)
-            step += 1 
+            elapsed = time.monotonic() - frame_start
+            remaining = target_frame_time - elapsed
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            else:
+                await asyncio.sleep(0)
+            step += 1
 
     async def replay(self, actions, fps=None, total=None):
         if fps is None:
             fps = get_default_fps(self.env)
-        clock = pygame.time.Clock()
+        target_frame_time = 1.0 / fps
         obs, _ = self.env.reset()
         self._ensure_screen(obs)
         self._render_frame(obs)
         self._print_keymappings()
         for action in tqdm(actions, total=total):
+            frame_start = time.monotonic()
             # Convert stored actions back to the environment's expected format
             if isinstance(action, list):
                 if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
@@ -672,8 +678,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     action = new_action
             obs, _, _, _, _ = self.env.step(action)
             self._render_frame(obs)
-            clock.tick(fps)
-            await asyncio.sleep(1.0 / fps)
+            elapsed = time.monotonic() - frame_start
+            remaining = target_frame_time - elapsed
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            else:
+                await asyncio.sleep(0)
 
     def close(self):
         """
