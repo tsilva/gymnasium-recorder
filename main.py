@@ -1,4 +1,3 @@
-import re
 import os
 import time
 import json
@@ -1029,7 +1028,14 @@ def generate_dataset_card(dataset, env_id, repo_id):
 
 def _create_env__stableretro(env_id):
     import retro
-    env = retro.make(env_id, render_mode="rgb_array")
+    try:
+        env = retro.make(env_id, render_mode="rgb_array")
+    except FileNotFoundError:
+        print(f"\nError: ROM not found for '{env_id}'.")
+        print(f"\nStable-retro requires ROM files to be imported separately.")
+        print(f"Import ROMs with:  python -m retro.import /path/to/your/roms/")
+        print(f"\nUse 'list_environments' to see which games have ROMs imported.")
+        sys.exit(1)
     env._stable_retro = True
     return env
 
@@ -1050,23 +1056,7 @@ def _create_env__alepy(env_id):
 def create_env(env_id):
     """Create a Gymnasium environment with the appropriate backend."""
 
-    retro_platforms = {
-        "Nes",
-        "Atari2600",
-        "Snes",
-        "GbAdvance",
-        "GameBoy",
-        "GbColor",
-        "PCEngine",
-        "Saturn",
-        "32x",
-        "Genesis",
-        "Sms",
-        "GameGear",
-        "SCD",
-    }
-    match = re.search(r"-(" + "|".join(retro_platforms) + r")$", env_id)
-    if match:
+    if env_id in set(_get_stableretro_envs()):
         env = _create_env__stableretro(env_id)
     elif "Vizdoom" in env_id:
         env = _create_env__vizdoom(env_id)
