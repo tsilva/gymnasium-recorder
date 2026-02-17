@@ -290,6 +290,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.temp_dir = tempfile.mkdtemp()
 
+        self._fps = None
+        self._fps_changed_at = 0
+
     def _ensure_screen(self, frame):
         """
         Ensure pygame screen is initialized with the correct shape.
@@ -349,6 +352,16 @@ class DatasetRecorderWrapper(gym.Wrapper):
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return False
+                if event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                    if self._fps is not None:
+                        self._fps = max(1, self._fps + 5)
+                        self._fps_changed_at = time.monotonic()
+                    continue
+                if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    if self._fps is not None:
+                        self._fps = max(1, self._fps - 5)
+                        self._fps_changed_at = time.monotonic()
+                    continue
                 with self.key_lock:
                     self.current_keys.add(event.key)
             elif event.type == pygame.KEYUP:
@@ -580,17 +593,60 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         # Update display with scaled frame
         self.screen.blit(scaled_surface, (0, 0))
+        self._render_fps_overlay()
         pygame.display.flip()
+
+    def _render_fps_overlay(self):
+        """Render a temporary FPS indicator in the top-right corner."""
+        if self._fps is None or self.screen is None:
+            return
+        elapsed = time.monotonic() - self._fps_changed_at
+        if elapsed >= 1.5:
+            return
+
+        # Compute alpha: full opacity for first 1.0s, fade over last 0.5s
+        if elapsed < 1.0:
+            alpha = 255
+        else:
+            alpha = int(255 * (1.5 - elapsed) / 0.5)
+
+        font = pygame.font.Font(None, 24)
+        text = font.render(f"{self._fps} FPS", True, (255, 255, 255))
+        text_rect = text.get_rect()
+
+        padding = 6
+        bg_w = text_rect.width + padding * 2
+        bg_h = text_rect.height + padding * 2
+        bg = pygame.Surface((bg_w, bg_h), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, min(alpha, 180)))
+
+        text_alpha = pygame.Surface(text_rect.size, pygame.SRCALPHA)
+        text_alpha.blit(text, (0, 0))
+        text_alpha.set_alpha(alpha)
+
+        screen_w = self.screen.get_width()
+        bg_x = screen_w - bg_w - 8
+        bg_y = 8
+        self.screen.blit(bg, (bg_x, bg_y))
+        self.screen.blit(text_alpha, (bg_x + padding, bg_y + padding))
 
     def _print_keymappings(self):
         """Print the current key mappings to the console."""
         print("\n--- Key Mappings ---")
         if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
             print("Environment: VizDoom")
+            if self._vizdoom_buttons is None:
+                self._vizdoom_buttons = self._init_vizdoom_key_mapping()
             for key, action_name in VIZDOOM_KEY_BINDINGS.items():
-                print(f"  {pygame.key.name(key):>12s}  ->  {action_name}")
-            print(f"  {'alt+left':>12s}  ->  MOVE_LEFT")
-            print(f"  {'alt+right':>12s}  ->  MOVE_RIGHT")
+                btn_idx = self._vizdoom_buttons.get(action_name)
+                suffix = f"  (btn {btn_idx})" if btn_idx is not None else ""
+                print(f"  {pygame.key.name(key):>12s}  ->  {action_name}{suffix}")
+            ml_idx = self._vizdoom_buttons.get("MOVE_LEFT")
+            mr_idx = self._vizdoom_buttons.get("MOVE_RIGHT")
+            ml_suffix = f"  (btn {ml_idx})" if ml_idx is not None else ""
+            mr_suffix = f"  (btn {mr_idx})" if mr_idx is not None else ""
+            print(f"  {'alt+left':>12s}  ->  MOVE_LEFT{ml_suffix}")
+            print(f"  {'alt+right':>12s}  ->  MOVE_RIGHT{mr_suffix}")
         elif hasattr(self.env, '_stable_retro') and self.env._stable_retro:
             platform = getattr(self.env.unwrapped, "system", None)
             print(f"Environment: Stable-Retro ({platform})")
@@ -598,7 +654,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
             for key, idx in mapping.items():
                 label = buttons[idx] if buttons and idx < len(buttons) else f"button {idx}"
-                print(f"  {pygame.key.name(key):>12s}  ->  {label}")
+                print(f"  {pygame.key.name(key):>12s}  ->  {label}  (idx {idx})")
         else:
             print("Environment: Atari")
             if self.key_to_action is None:
@@ -609,7 +665,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 meanings = None
             for key, action_idx in self.key_to_action.items():
                 label = meanings[action_idx] if meanings and action_idx < len(meanings) else f"action {action_idx}"
-                print(f"  {pygame.key.name(key):>12s}  ->  {label}")
+                print(f"  {pygame.key.name(key):>12s}  ->  {label}  (action {action_idx})")
         print(f"  {'space':>12s}  ->  Start recording")
         print(f"  {'escape':>12s}  ->  Exit")
         print("--------------------\n")
@@ -685,7 +741,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         if fps is None:
             fps = get_default_fps(self.env)
-        target_frame_time = 1.0 / fps
+        self._fps = fps
 
         self.episode_ids.clear()
         self.frames.clear()
@@ -713,7 +769,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             done = terminated or truncated
             self._render_frame(obs)
             elapsed = time.monotonic() - frame_start
-            remaining = target_frame_time - elapsed
+            remaining = (1.0 / self._fps) - elapsed
             if remaining > 0:
                 await asyncio.sleep(remaining)
             else:
@@ -723,13 +779,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
     async def replay(self, actions, fps=None, total=None):
         if fps is None:
             fps = get_default_fps(self.env)
-        target_frame_time = 1.0 / fps
+        self._fps = fps
         obs, _ = self.env.reset()
         self._ensure_screen(obs)
         self._render_frame(obs)
         self._print_keymappings()
         for action in tqdm(actions, total=total):
             frame_start = time.monotonic()
+            if not self._input_loop(): break
             # Convert stored actions back to the environment's expected format
             if isinstance(action, list):
                 if isinstance(self.env.action_space, gym.spaces.Discrete) and len(action) == 1:
@@ -754,7 +811,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             obs, _, _, _, _ = self.env.step(action)
             self._render_frame(obs)
             elapsed = time.monotonic() - frame_start
-            remaining = target_frame_time - elapsed
+            remaining = (1.0 / self._fps) - elapsed
             if remaining > 0:
                 await asyncio.sleep(remaining)
             else:
