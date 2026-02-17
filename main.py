@@ -56,10 +56,11 @@ def _load_keymappings(pygame):
     default_start_key = pygame.K_SPACE
 
     default_atari = {
-        pygame.K_UP: 1,
-        pygame.K_RIGHT: 2,
-        pygame.K_LEFT: 3,
-        pygame.K_DOWN: 4,
+        pygame.K_SPACE: 1,   # FIRE
+        pygame.K_UP: 2,      # UP
+        pygame.K_RIGHT: 3,   # RIGHT
+        pygame.K_LEFT: 4,    # LEFT
+        pygame.K_DOWN: 5,    # DOWN
     }
 
     default_vizdoom = {
@@ -520,13 +521,20 @@ class DatasetRecorderWrapper(gym.Wrapper):
         elif hasattr(self.env, '_stable_retro') and self.env._stable_retro:
             platform = getattr(self.env.unwrapped, "system", None)
             print(f"Environment: Stable-Retro ({platform})")
+            buttons = getattr(self.env.unwrapped, "buttons", None)
             mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
             for key, idx in mapping.items():
-                print(f"  {pygame.key.name(key):>12s}  ->  button {idx}")
+                label = buttons[idx] if buttons and idx < len(buttons) else f"button {idx}"
+                print(f"  {pygame.key.name(key):>12s}  ->  {label}")
         else:
             print("Environment: Atari")
+            try:
+                meanings = self.env.unwrapped.get_action_meanings()
+            except (AttributeError, TypeError):
+                meanings = None
             for key, action_idx in ATARI_KEY_BINDINGS.items():
-                print(f"  {pygame.key.name(key):>12s}  ->  action {action_idx}")
+                label = meanings[action_idx] if meanings and action_idx < len(meanings) else f"action {action_idx}"
+                print(f"  {pygame.key.name(key):>12s}  ->  {label}")
         print(f"  {'space':>12s}  ->  Start recording")
         print(f"  {'escape':>12s}  ->  Exit")
         print("--------------------\n")
