@@ -12,7 +12,7 @@ import tomllib
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
 
 console = Console()
@@ -273,14 +273,14 @@ def _lazy_init():
 
     global CONFIG
     global np, pygame, PILImage
-    global whoami, DatasetCard, DatasetCardData, HfApi
+    global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
     global Dataset, Value, Sequence, HFImage, load_dataset, load_from_disk, load_dataset_builder, concatenate_datasets
     global START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS
 
     import numpy as np
     import pygame
     from PIL import Image as PILImage
-    from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
+    from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
     from datasets import (
         Dataset,
         Value,
@@ -294,6 +294,53 @@ def _lazy_init():
 
     START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS = _load_keymappings(pygame)
     CONFIG = _load_config()
+
+def ensure_hf_login(force=False) -> bool:
+    """Ensure user is logged in to Hugging Face Hub. Prompts interactively if needed."""
+    _lazy_init()
+    token = get_token()
+
+    if token and not force:
+        return True
+
+    if token and force:
+        try:
+            info = whoami(token=token)
+            username = info.get("name", "unknown")
+            console.print(f"[{STYLE_SUCCESS}]Already logged in as [{STYLE_ENV}]{username}[/][/]")
+            if not Confirm.ask("Re-login with a different token?", default=False):
+                return True
+        except Exception:
+            console.print(f"[{STYLE_FAIL}]Existing token is invalid.[/]")
+
+    console.print(Panel(
+        f"[{STYLE_ACTION}]Create a token at:[/] [{STYLE_CMD}]https://huggingface.co/settings/tokens[/]\n"
+        f"Required permission: [{STYLE_INFO}]write[/]",
+        title="Hugging Face Login",
+        border_style="cyan",
+    ))
+
+    for attempt in range(1, 4):
+        token_input = Prompt.ask("Paste your token", password=True)
+        if not token_input.strip():
+            console.print(f"[{STYLE_FAIL}]Empty token, try again.[/]")
+            continue
+        try:
+            login(token=token_input.strip())
+            info = whoami()
+            username = info.get("name", "unknown")
+            console.print(f"[{STYLE_SUCCESS}]Logged in as [{STYLE_ENV}]{username}[/][/]")
+            return True
+        except Exception as e:
+            remaining = 3 - attempt
+            if remaining > 0:
+                console.print(f"[{STYLE_FAIL}]Login failed: {e}[/] ({remaining} attempt{'s' if remaining > 1 else ''} left)")
+            else:
+                console.print(f"[{STYLE_FAIL}]Login failed: {e}[/]")
+
+    console.print(f"[{STYLE_FAIL}]Could not authenticate. Try:[/] [{STYLE_CMD}]uv run python main.py login[/]")
+    return False
+
 
 class DatasetRecorderWrapper(gym.Wrapper):
     """
@@ -1110,6 +1157,8 @@ def filter_dataset_by_episode(dataset, episode_arg):
 
 def upload_local_dataset(env_id):
     """Load local dataset and push to Hugging Face Hub."""
+    if not ensure_hf_login():
+        return False
     dataset = load_local_dataset(env_id)
     if dataset is None:
         console.print(f"[{STYLE_FAIL}]No local dataset found for {env_id}[/]")
@@ -1503,6 +1552,7 @@ async def main():
     parser_upload = subparsers.add_parser("upload", help="Upload local dataset to Hugging Face Hub")
     parser_upload.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
 
+    subparsers.add_parser("login", help="Log in to Hugging Face Hub")
     subparsers.add_parser("list_environments", help="List available environments")
 
     args = parser.parse_args()
@@ -1511,6 +1561,11 @@ async def main():
         for attr, default in [("env_id", None), ("fps", None), ("scale", None), ("jpeg_quality", None), ("dry_run", False)]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
+
+    if args.command == "login":
+        _lazy_init()
+        ensure_hf_login(force=True)
+        return
 
     if args.command == "list_environments":
         list_environments()
