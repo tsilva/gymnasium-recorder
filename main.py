@@ -839,6 +839,8 @@ async def main():
     parser_record = subparsers.add_parser("record", help="Record gameplay")
     parser_record.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_record.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+    parser_record.add_argument("--dry-run", action="store_true", default=False,
+        help="Record without uploading to Hugging Face (no HF account required)")
 
     parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
     parser_playback.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
@@ -855,35 +857,55 @@ async def main():
     _lazy_init()
 
     env_id = args.env_id
-    hf_repo_id = env_id_to_hf_repo_id(env_id)
-    loaded_dataset = None
-    api = HfApi()
-    try:
-        api.dataset_info(hf_repo_id)
-        loaded_dataset = load_dataset(
-            hf_repo_id,
-            split="train",
-            streaming=True,
-        )
-    except Exception:
-        loaded_dataset = None
-
     env = create_env(env_id)
     fps = args.fps if args.fps is not None else get_default_fps(env)
 
     if args.command == "record":
+        dry_run = args.dry_run
+
+        hf_repo_id = None
+        loaded_dataset = None
+        if not dry_run:
+            hf_repo_id = env_id_to_hf_repo_id(env_id)
+            api = HfApi()
+            try:
+                api.dataset_info(hf_repo_id)
+                loaded_dataset = load_dataset(
+                    hf_repo_id,
+                    split="train",
+                    streaming=True,
+                )
+            except Exception:
+                loaded_dataset = None
+
         recorder = DatasetRecorderWrapper(env)
         recorded_dataset = await recorder.record(fps=fps)
-        final_dataset = (
-            concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
-        )
-        upload = input("Upload dataset to Hugging Face Hub? [Y/n] ").strip().lower()
-        if upload in ("", "y", "yes"):
-            final_dataset.push_to_hub(hf_repo_id)
-            generate_dataset_card(final_dataset, env_id, hf_repo_id)
+
+        if dry_run:
+            print("Dry run complete. Dataset not uploaded.")
         else:
-            print("Skipping upload. Dataset was not pushed to the hub.")
+            final_dataset = (
+                concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
+            )
+            upload = input("Upload dataset to Hugging Face Hub? [Y/n] ").strip().lower()
+            if upload in ("", "y", "yes"):
+                final_dataset.push_to_hub(hf_repo_id)
+                generate_dataset_card(final_dataset, env_id, hf_repo_id)
+            else:
+                print("Skipping upload. Dataset was not pushed to the hub.")
     elif args.command == "playback":
+        hf_repo_id = env_id_to_hf_repo_id(env_id)
+        loaded_dataset = None
+        api = HfApi()
+        try:
+            api.dataset_info(hf_repo_id)
+            loaded_dataset = load_dataset(
+                hf_repo_id,
+                split="train",
+                streaming=True,
+            )
+        except Exception:
+            loaded_dataset = None
         assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
         recorder = DatasetRecorderWrapper(env)
         try:
