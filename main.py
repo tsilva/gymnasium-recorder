@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import shutil
@@ -7,6 +8,23 @@ import asyncio
 import tempfile
 import argparse
 import tomllib
+
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.prompt import Confirm
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
+
+console = Console()
+
+STYLE_KEY = "bold cyan"
+STYLE_ACTION = "bold white"
+STYLE_ENV = "bold green"
+STYLE_PATH = "dim"
+STYLE_CMD = "bold yellow"
+STYLE_SUCCESS = "bold green"
+STYLE_FAIL = "bold red"
+STYLE_INFO = "cyan"
 
 from dotenv import load_dotenv
 load_dotenv(override=True)  # Load environment variables from .env file
@@ -254,7 +272,7 @@ def _lazy_init():
     _initialized = True
 
     global CONFIG
-    global np, pygame, PILImage, tqdm
+    global np, pygame, PILImage
     global whoami, DatasetCard, DatasetCardData, HfApi
     global Dataset, Value, Sequence, HFImage, load_dataset, load_from_disk, load_dataset_builder, concatenate_datasets
     global START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS
@@ -262,7 +280,6 @@ def _lazy_init():
     import numpy as np
     import pygame
     from PIL import Image as PILImage
-    from tqdm import tqdm
     from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
     from datasets import (
         Dataset,
@@ -678,31 +695,33 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
     def _print_keymappings(self):
         """Print the current key mappings to the console."""
-        print("\n--- Key Mappings ---")
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+        table.add_column("Key", justify="right", style=STYLE_KEY)
+        table.add_column("Action", style=STYLE_ACTION)
+        table.add_column("Index", style=STYLE_PATH)
+
         if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
-            print("Environment: VizDoom")
+            env_type = "VizDoom"
             if self._vizdoom_buttons is None:
                 self._vizdoom_buttons = self._init_vizdoom_key_mapping()
             for key, action_name in VIZDOOM_KEY_BINDINGS.items():
                 btn_idx = self._vizdoom_buttons.get(action_name)
-                suffix = f"  (btn {btn_idx})" if btn_idx is not None else ""
-                print(f"  {pygame.key.name(key):>12s}  ->  {action_name}{suffix}")
+                idx_str = f"btn {btn_idx}" if btn_idx is not None else ""
+                table.add_row(pygame.key.name(key), action_name, idx_str)
             ml_idx = self._vizdoom_buttons.get("MOVE_LEFT")
             mr_idx = self._vizdoom_buttons.get("MOVE_RIGHT")
-            ml_suffix = f"  (btn {ml_idx})" if ml_idx is not None else ""
-            mr_suffix = f"  (btn {mr_idx})" if mr_idx is not None else ""
-            print(f"  {'alt+left':>12s}  ->  MOVE_LEFT{ml_suffix}")
-            print(f"  {'alt+right':>12s}  ->  MOVE_RIGHT{mr_suffix}")
+            table.add_row("alt+left", "MOVE_LEFT", f"btn {ml_idx}" if ml_idx is not None else "")
+            table.add_row("alt+right", "MOVE_RIGHT", f"btn {mr_idx}" if mr_idx is not None else "")
         elif hasattr(self.env, '_stable_retro') and self.env._stable_retro:
             platform = getattr(self.env.unwrapped, "system", None)
-            print(f"Environment: Stable-Retro ({platform})")
+            env_type = f"Stable-Retro ({platform})"
             buttons = getattr(self.env.unwrapped, "buttons", None)
             mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
             for key, idx in mapping.items():
                 label = buttons[idx] if buttons and idx < len(buttons) else f"button {idx}"
-                print(f"  {pygame.key.name(key):>12s}  ->  {label}  (idx {idx})")
+                table.add_row(pygame.key.name(key), label, f"idx {idx}")
         else:
-            print("Environment: Atari")
+            env_type = "Atari"
             if self.key_to_action is None:
                 self._resolve_atari_key_mapping()
             try:
@@ -711,10 +730,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 meanings = None
             for key, action_idx in self.key_to_action.items():
                 label = meanings[action_idx] if meanings and action_idx < len(meanings) else f"action {action_idx}"
-                print(f"  {pygame.key.name(key):>12s}  ->  {label}  (action {action_idx})")
-        print(f"  {'space':>12s}  ->  Start recording")
-        print(f"  {'escape':>12s}  ->  Exit")
-        print("--------------------\n")
+                table.add_row(pygame.key.name(key), label, f"action {action_idx}")
+
+        table.add_section()
+        table.add_row("space", "Start recording", "")
+        table.add_row("escape", "Exit", "")
+
+        console.print(Panel(table, title=f"[{STYLE_ENV}]{env_type}[/] Key Mappings", border_style=STYLE_INFO, expand=False))
 
     def _wait_for_start(self, start_key: int = None) -> bool:
         """Display overlay prompting the user to start.
@@ -891,65 +913,77 @@ class DatasetRecorderWrapper(gym.Wrapper):
         reward_mismatches = 0
         terminal_mismatches = 0
 
-        for item in tqdm(actions, total=total):
-            frame_start = time.monotonic()
-            if not self._input_loop(): break
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            ptask = progress.add_task("Replaying", total=total)
+            for item in actions:
+                frame_start = time.monotonic()
+                if not self._input_loop(): break
 
-            if verify:
-                action, recorded_image, recorded_reward, recorded_terminated, recorded_truncated = item
-            else:
-                action = item
-
-            action = self._convert_action(action)
-            obs, reward, terminated, truncated, _ = self.env.step(action)
-            self._render_frame(obs)
-
-            if verify:
-                obs_image = self._extract_obs_image(obs)
-                if obs_image.dtype != np.uint8:
-                    obs_image = obs_image.astype(np.uint8)
-                recorded_array = np.array(recorded_image, dtype=np.uint8)
-
-                if obs_image.shape == recorded_array.shape:
-                    mse = float(np.mean((obs_image.astype(np.float32) - recorded_array.astype(np.float32)) ** 2))
+                if verify:
+                    action, recorded_image, recorded_reward, recorded_terminated, recorded_truncated = item
                 else:
-                    print(f"\n  Warning: shape mismatch at frame {len(verify_metrics)}: "
-                          f"obs={obs_image.shape} vs recorded={recorded_array.shape}, skipping comparison")
-                    mse = None
+                    action = item
 
-                if float(reward) != float(recorded_reward):
-                    reward_mismatches += 1
-                if bool(terminated) != bool(recorded_terminated) or bool(truncated) != bool(recorded_truncated):
-                    terminal_mismatches += 1
+                action = self._convert_action(action)
+                obs, reward, terminated, truncated, _ = self.env.step(action)
+                self._render_frame(obs)
 
-                verify_metrics.append(mse)
+                if verify:
+                    obs_image = self._extract_obs_image(obs)
+                    if obs_image.dtype != np.uint8:
+                        obs_image = obs_image.astype(np.uint8)
+                    recorded_array = np.array(recorded_image, dtype=np.uint8)
 
-            elapsed = time.monotonic() - frame_start
-            remaining = (1.0 / self._fps) - elapsed
-            if remaining > 0:
-                await asyncio.sleep(remaining)
-            else:
-                await asyncio.sleep(0)
+                    if obs_image.shape == recorded_array.shape:
+                        mse = float(np.mean((obs_image.astype(np.float32) - recorded_array.astype(np.float32)) ** 2))
+                    else:
+                        console.print(f"  [yellow]Warning:[/] shape mismatch at frame {len(verify_metrics)}: "
+                              f"obs={obs_image.shape} vs recorded={recorded_array.shape}, skipping comparison")
+                        mse = None
+
+                    if float(reward) != float(recorded_reward):
+                        reward_mismatches += 1
+                    if bool(terminated) != bool(recorded_terminated) or bool(truncated) != bool(recorded_truncated):
+                        terminal_mismatches += 1
+
+                    verify_metrics.append(mse)
+
+                elapsed = time.monotonic() - frame_start
+                remaining = (1.0 / self._fps) - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                else:
+                    await asyncio.sleep(0)
+                progress.advance(ptask)
 
         if verify and verify_metrics:
             valid_mses = [m for m in verify_metrics if m is not None]
             n_total = len(verify_metrics)
             n_skipped = n_total - len(valid_mses)
 
-            print("\n=== Determinism Verification Report ===")
-            print(f"Total frames: {n_total}")
+            lines = [f"Total frames: [{STYLE_INFO}]{n_total}[/]"]
             if n_skipped > 0:
-                print(f"Skipped (shape mismatch): {n_skipped}")
+                lines.append(f"Skipped (shape mismatch): [yellow]{n_skipped}[/]")
+
             if valid_mses:
                 mean_mse = sum(valid_mses) / len(valid_mses)
                 max_mse = max(valid_mses)
                 min_mse = min(valid_mses)
                 exceeded = sum(1 for m in valid_mses if m > mse_threshold)
-                print(f"Frame MSE:  mean={mean_mse:.2f}, max={max_mse:.2f}, min={min_mse:.2f}")
-                print(f"Reward mismatches: {reward_mismatches}/{n_total} frames")
-                print(f"Terminal state mismatches: {terminal_mismatches}/{n_total} frames")
-                if exceeded == 0 and reward_mismatches == 0 and terminal_mismatches == 0:
-                    print(f"Result: PASS (all frames below threshold {mse_threshold})")
+                lines.append(f"Frame MSE:  mean=[{STYLE_INFO}]{mean_mse:.2f}[/], max=[{STYLE_INFO}]{max_mse:.2f}[/], min=[{STYLE_INFO}]{min_mse:.2f}[/]")
+                lines.append(f"Reward mismatches: [{STYLE_INFO}]{reward_mismatches}/{n_total}[/] frames")
+                lines.append(f"Terminal state mismatches: [{STYLE_INFO}]{terminal_mismatches}/{n_total}[/] frames")
+
+                passed = exceeded == 0 and reward_mismatches == 0 and terminal_mismatches == 0
+                if passed:
+                    lines.append(f"Result: [{STYLE_SUCCESS}]PASS[/] (all frames below threshold {mse_threshold})")
+                    border_style = "green"
                 else:
                     reasons = []
                     if exceeded > 0:
@@ -958,9 +992,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
                         reasons.append(f"{reward_mismatches} reward mismatches")
                     if terminal_mismatches > 0:
                         reasons.append(f"{terminal_mismatches} terminal state mismatches")
-                    print(f"Result: FAIL ({', '.join(reasons)})")
+                    lines.append(f"Result: [{STYLE_FAIL}]FAIL[/] ({', '.join(reasons)})")
+                    border_style = "red"
             else:
-                print("No valid frame comparisons (all skipped).")
+                lines.append("[yellow]No valid frame comparisons (all skipped).[/]")
+                border_style = "yellow"
+
+            console.print()
+            console.print(Panel("\n".join(lines), title="Determinism Verification Report", border_style=border_style, expand=False))
 
     def close(self):
         """
@@ -992,7 +1031,7 @@ def save_dataset_locally(dataset, env_id):
         dataset = concatenate_datasets([existing, dataset])
     os.makedirs(os.path.dirname(path), exist_ok=True)
     dataset.save_to_disk(path)
-    print(f"Dataset saved locally ({path})")
+    console.print(f"Dataset saved locally ([{STYLE_PATH}]{path}[/])")
     return path
 
 
@@ -1020,14 +1059,14 @@ def filter_dataset_by_episode(dataset, episode_arg):
         try:
             n = int(episode_arg)
             if n < 1 or n > len(episode_ids):
-                print(f"Episode {n} out of range (1-{len(episode_ids)}). Using latest.")
+                console.print(f"[yellow]Episode {n} out of range (1-{len(episode_ids)}). Using latest.[/]")
                 target = episode_ids[-1]
                 idx = len(episode_ids)
             else:
                 target = episode_ids[n - 1]
                 idx = n
         except ValueError:
-            print(f"Invalid episode '{episode_arg}'. Using latest.")
+            console.print(f"[yellow]Invalid episode '{episode_arg}'. Using latest.[/]")
             target = episode_ids[-1]
             idx = len(episode_ids)
 
@@ -1039,18 +1078,18 @@ def upload_local_dataset(env_id):
     """Load local dataset and push to Hugging Face Hub."""
     dataset = load_local_dataset(env_id)
     if dataset is None:
-        print(f"No local dataset found for {env_id}")
-        print(f"  Expected at: {get_local_dataset_path(env_id)}")
+        console.print(f"[{STYLE_FAIL}]No local dataset found for {env_id}[/]")
+        console.print(f"  Expected at: [{STYLE_PATH}]{get_local_dataset_path(env_id)}[/]")
         return False
     hf_repo_id = env_id_to_hf_repo_id(env_id)
     try:
         dataset.push_to_hub(hf_repo_id)
         generate_dataset_card(dataset, env_id, hf_repo_id)
-        print(f"Dataset uploaded to {hf_repo_id}")
+        console.print(f"[{STYLE_SUCCESS}]Dataset uploaded to {hf_repo_id}[/]")
         return True
     except Exception as e:
-        print(f"Upload failed: {e}")
-        print(f"To retry: uv run python main.py upload {env_id}")
+        console.print(f"[{STYLE_FAIL}]Upload failed: {e}[/]")
+        console.print(f"To retry: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]")
         return False
 
 
@@ -1108,14 +1147,14 @@ def generate_dataset_card(dataset, env_id, repo_id):
     )
 
 def _create_env__stableretro(env_id):
-    import retro
+    import stable_retro as retro
     try:
         env = retro.make(env_id, render_mode="rgb_array")
     except FileNotFoundError:
-        print(f"\nError: ROM not found for '{env_id}'.")
-        print(f"\nStable-retro requires ROM files to be imported separately.")
-        print(f"Import ROMs with:  python -m retro.import /path/to/your/roms/")
-        print(f"\nUse 'list_environments' to see which games have ROMs imported.")
+        console.print(f"\n[{STYLE_FAIL}]Error: ROM not found for '{env_id}'.[/]")
+        console.print(f"\nStable-retro requires ROM files to be imported separately.")
+        console.print(f"Import ROMs with:  [{STYLE_CMD}]python -m stable_retro.import /path/to/your/roms/[/]")
+        console.print(f"\nUse [{STYLE_CMD}]list_environments[/] to see which games have ROMs imported.")
         sys.exit(1)
     env._stable_retro = True
     return env
@@ -1250,7 +1289,7 @@ def get_default_fps(env):
     frameskip = get_frameskip(env)
     if frameskip > 1:
         adjusted_fps = max(int(round(base_fps / frameskip)), 1)
-        print(f"[FPS] Base FPS={base_fps}, frameskip={frameskip} → adjusted to {adjusted_fps} FPS for human playability")
+        console.print(f"[{STYLE_INFO}]\\[FPS][/] Base FPS={base_fps}, frameskip={frameskip} → adjusted to [{STYLE_INFO}]{adjusted_fps}[/] FPS for human playability")
         return adjusted_fps
 
     return base_fps
@@ -1272,7 +1311,7 @@ def _get_atari_envs() -> list[str]:
 
 def _get_stableretro_envs(imported_only: bool = False) -> list[str]:
     try:
-        import retro
+        import stable_retro as retro
         all_games = sorted(retro.data.list_games(retro.data.Integrations.ALL))
         if imported_only:
             result = []
@@ -1328,7 +1367,7 @@ def select_environment_interactive() -> str:
         env_id_map.append(env_id)
 
     if not entries:
-        print("No environments found. Install ale-py, stable-retro, or vizdoom.")
+        console.print("[dim]No environments found. Install ale-py, stable-retro, or vizdoom.[/]")
         raise SystemExit(1)
 
     menu = TerminalMenu(
@@ -1341,57 +1380,56 @@ def select_environment_interactive() -> str:
 
     selected_index = menu.show()
     if selected_index is None:
-        print("No environment selected.")
+        console.print("[dim]No environment selected.[/]")
         raise SystemExit(0)
 
     return env_id_map[selected_index]
 
 
 def _list_environments__alepy():
-    print("=== Atari Environments ===")
     atari_ids = _get_atari_envs()
     if atari_ids:
-        for env_id in atari_ids:
-            print(env_id)
+        lines = "\n".join(atari_ids)
     else:
-        print("Could not list Atari environments.")
+        lines = "[dim]Could not list Atari environments.[/]"
+    console.print(Panel(lines, title="[bold]Atari Environments[/]", border_style=STYLE_INFO, expand=False))
 
 
 def _list_environments__stableretro():
     all_games = _get_stableretro_envs()
     if all_games:
-        print("\n=== Stable-Retro Games ===")
+        lines = []
         try:
-            import retro
+            import stable_retro as retro
             for game in all_games:
                 try:
                     retro.data.get_romfile_path(game, retro.data.Integrations.ALL)
-                    status = "(imported)"
+                    lines.append(f"{game} [{STYLE_SUCCESS}](imported)[/]")
                 except FileNotFoundError:
-                    status = "(missing ROM)"
-                print(f"{game} {status}")
+                    lines.append(f"{game} [{STYLE_FAIL}](missing ROM)[/]")
         except Exception as e:
-            print(f"\nStable-Retro not installed: {e}")
+            lines.append(f"[{STYLE_FAIL}]Stable-Retro not installed: {e}[/]")
+        console.print(Panel("\n".join(lines), title="[bold]Stable-Retro Games[/]", border_style=STYLE_INFO, expand=False))
     else:
-        print("\nStable-Retro not installed or no games found.")
+        console.print(Panel("[dim]Stable-Retro not installed or no games found.[/]", title="[bold]Stable-Retro Games[/]", border_style=STYLE_INFO, expand=False))
 
 
 def _list_environments__vizdoom():
     vizdoom_ids = _get_vizdoom_envs()
     if vizdoom_ids:
-        print("\n=== VizDoom Environments ===")
-        for env_id in vizdoom_ids:
-            print(env_id)
+        lines = list(vizdoom_ids)
         try:
             import vizdoom
             if getattr(vizdoom, "wads", None):
-                print("\nAvailable WADs:")
+                lines.append("")
+                lines.append("[bold]Available WADs:[/]")
                 for wad in vizdoom.wads:
-                    print(wad)
+                    lines.append(f"  {wad}")
         except Exception:
             pass
+        console.print(Panel("\n".join(lines), title="[bold]VizDoom Environments[/]", border_style=STYLE_INFO, expand=False))
     else:
-        print("\nVizDoom not installed.")
+        console.print(Panel("[dim]VizDoom not installed.[/]", title="[bold]VizDoom Environments[/]", border_style=STYLE_INFO, expand=False))
 
 
 def list_environments():
@@ -1461,15 +1499,18 @@ async def main():
 
         save_dataset_locally(recorded_dataset, env_id)
         recorder.close()  # cleanup temp files after dataset is saved
-        print(f"To play back: uv run python main.py playback {env_id}")
+        console.print(f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]")
 
         if not args.dry_run:
-            upload = input("Upload to Hugging Face Hub? [Y/n] ").strip().lower()
-            if upload in ("", "y", "yes"):
+            try:
+                do_upload = Confirm.ask("Upload to Hugging Face Hub?", default=True, console=console)
+            except EOFError:
+                do_upload = False
+            if do_upload:
                 if not upload_local_dataset(env_id):
-                    print(f"To retry: uv run python main.py upload {env_id}")
+                    console.print(f"To retry: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]")
             else:
-                print(f"To upload later: uv run python main.py upload {env_id}")
+                console.print(f"To upload later: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]")
     elif args.command == "playback":
         loaded_dataset = load_local_dataset(env_id)
         if loaded_dataset is not None:
@@ -1477,10 +1518,10 @@ async def main():
             info = f"{len(loaded_dataset)} frames"
             if ep_label:
                 info += f", {ep_label}"
-            print(f"Playing back from local dataset ({info})")
+            console.print(f"[{STYLE_INFO}]Playing back from local dataset ({info})[/]")
             total = len(loaded_dataset)
         else:
-            print("No local dataset found, trying Hugging Face Hub...")
+            console.print("[dim]No local dataset found, trying Hugging Face Hub...[/]")
             try:
                 hf_repo_id = env_id_to_hf_repo_id(env_id)
                 api = HfApi()
@@ -1489,9 +1530,9 @@ async def main():
             except Exception:
                 loaded_dataset = None
             if loaded_dataset is None:
-                print(f"No dataset found for {env_id}.")
-                print(f"  Local path: {get_local_dataset_path(env_id)}")
-                print("  Record a session first: uv run python main.py record " + env_id)
+                console.print(f"[{STYLE_FAIL}]No dataset found for {env_id}.[/]")
+                console.print(f"  Local path: [{STYLE_PATH}]{get_local_dataset_path(env_id)}[/]")
+                console.print(f"  Record a session first: [{STYLE_CMD}]uv run python main.py record {env_id}[/]")
                 return
             try:
                 builder = load_dataset_builder(hf_repo_id)
