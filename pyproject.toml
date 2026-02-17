@@ -19,6 +19,9 @@ dependencies = [
     "stable-retro",
 ]
 
+[project.optional-dependencies]
+minari = ["minari>=0.5.0"]
+
 [tool.uv.sources]
 # PyPI 0.9.9 arm64 wheel is mislabeled (contains x86_64 binary).
 # Use local ARM64 wheel built from source with Clang on Apple Silicon.

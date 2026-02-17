@@ -1185,6 +1185,128 @@ def upload_local_dataset(env_id):
         return False
 
 
+def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
+    """Export a local HF dataset to Minari format for offline RL."""
+    try:
+        import minari
+        from minari.data_collector import EpisodeBuffer
+    except ImportError:
+        console.print(f"[{STYLE_FAIL}]Minari is not installed.[/]")
+        console.print(f"Install with: [{STYLE_CMD}]uv pip install 'minari>=0.5.0'[/]")
+        return False
+
+    dataset = load_local_dataset(env_id)
+    if dataset is None:
+        console.print(f"[{STYLE_FAIL}]No local dataset found for {env_id}[/]")
+        console.print(f"  Expected at: [{STYLE_PATH}]{get_local_dataset_path(env_id)}[/]")
+        return False
+
+    if episode_arg != "all":
+        dataset, ep_label = filter_dataset_by_episode(dataset, episode_arg)
+        if ep_label:
+            console.print(f"[{STYLE_INFO}]Exporting {ep_label}[/]")
+
+    # Group rows by episode
+    episodes = {}
+    for row in dataset:
+        eid = row["episode_id"]
+        if eid not in episodes:
+            episodes[eid] = []
+        episodes[eid].append(row)
+    for eid in episodes:
+        episodes[eid].sort(key=lambda r: r["step"])
+
+    # Try to extract action/observation spaces from the environment
+    action_space = None
+    observation_space = None
+    try:
+        env = create_env(env_id)
+        action_space = env.action_space
+        observation_space = env.observation_space
+        env.close()
+    except Exception:
+        console.print(f"[yellow]Could not create env for space metadata; inferring from data.[/]")
+
+    # Build EpisodeBuffers
+    buffers = []
+    total_steps = 0
+    for ep_idx, (eid, rows) in enumerate(sorted(episodes.items())):
+        observations = []
+        actions = []
+        rewards = []
+        terminations = []
+        truncations = []
+
+        for row in rows:
+            img = row["image"]
+            if not isinstance(img, np.ndarray):
+                img = np.array(img)
+            observations.append(img)
+
+            action = row["action"]
+            if isinstance(action, list) and len(action) == 1:
+                action = action[0]
+            actions.append(action)
+
+            rewards.append(float(row["reward"]))
+            terminations.append(bool(row["terminated"]))
+            truncations.append(bool(row["truncated"]))
+
+        # Minari requires N+1 observations (initial + after each step).
+        # Our dataset stores obs_t (before action) but not the final obs_{N}.
+        # Duplicate the last observation as an approximation.
+        observations.append(observations[-1])
+
+        buffers.append(EpisodeBuffer(
+            id=ep_idx,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            terminations=terminations,
+            truncations=truncations,
+        ))
+        total_steps += len(actions)
+
+    env_id_underscored = env_id.replace("-", "_").replace("/", "_")
+    if dataset_name is None:
+        dataset_name = f"gymnasium-recorder/{env_id_underscored}/human-v0"
+
+    # Delete existing dataset with same name if present
+    try:
+        minari.delete_dataset(dataset_name)
+    except Exception:
+        pass
+
+    create_kwargs = dict(
+        dataset_id=dataset_name,
+        buffer=buffers,
+        algorithm_name="human",
+        description=f"Human gameplay of {env_id}, recorded with gymnasium-recorder",
+    )
+    if author:
+        create_kwargs["author"] = author
+    if action_space is not None:
+        create_kwargs["action_space"] = action_space
+    if observation_space is not None:
+        create_kwargs["observation_space"] = observation_space
+
+    minari_ds = minari.create_dataset_from_buffers(**create_kwargs)
+
+    lines = [
+        f"Episodes: [{STYLE_INFO}]{len(buffers)}[/]",
+        f"Total steps: [{STYLE_INFO}]{total_steps}[/]",
+        f"Dataset ID: [{STYLE_ENV}]{dataset_name}[/]",
+        "",
+        f"[yellow]Note:[/] Terminal observations are approximated (last obs duplicated).",
+        "",
+        f"Load with:",
+        f"  [{STYLE_CMD}]import minari[/]",
+        f"  [{STYLE_CMD}]ds = minari.load_dataset('{dataset_name}')[/]",
+    ]
+    console.print(Panel("\n".join(lines), title="Minari Export Complete", border_style="green", expand=False))
+    return True
+
+
 def _detect_backend(env_id):
     """Return backend name for metadata tags."""
     if env_id in set(_get_stableretro_envs()):
@@ -1611,6 +1733,13 @@ async def main():
     subparsers.add_parser("login", help="Log in to Hugging Face Hub")
     subparsers.add_parser("list_environments", help="List available environments")
 
+    parser_minari = subparsers.add_parser("minari-export", help="Export local dataset to Minari format")
+    parser_minari.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser_minari.add_argument("--name", type=str, default=None, help="Minari dataset name (default: gymnasium-recorder/<env_id>/human-v0)")
+    parser_minari.add_argument("--author", type=str, default=None, help="Author name for dataset metadata")
+    parser_minari.add_argument("--episode", type=str, default="all",
+        help="Episode to export: 'all' (default), 'latest', or episode number (1-based)")
+
     args = parser.parse_args()
     if args.command is None:
         args.command = "record"
@@ -1635,6 +1764,10 @@ async def main():
 
     if args.command == "upload":
         upload_local_dataset(env_id)
+        return
+
+    if args.command == "minari-export":
+        minari_export(env_id, dataset_name=args.name, author=args.author, episode_arg=args.episode)
         return
 
     if hasattr(args, 'scale') and args.scale is not None:

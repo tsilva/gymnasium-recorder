@@ -306,12 +306,18 @@ dependencies = [
     { name = "vizdoom" },
 ]
 
+[package.optional-dependencies]
+minari = [
+    { name = "minari" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "ale-py" },
     { name = "datasets" },
     { name = "gymnasium", extras = ["atari"] },
     { name = "huggingface-hub" },
+    { name = "minari", marker = "extra == 'minari'", specifier = ">=0.5.0" },
     { name = "numpy" },
     { name = "pillow" },
     { name = "pygame-ce" },
@@ -322,6 +328,7 @@ requires-dist = [
     { name = "stable-retro", marker = "sys_platform == 'darwin'", path = "wheels/stable_retro-0.9.9-cp312-cp312-macosx_26_0_arm64.whl" },
     { name = "vizdoom" },
 ]
+provides-extras = ["minari"]
 
 [[package]]
 name = "h11"
@@ -424,6 +431,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "minari"
+version = "0.5.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gymnasium" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "typer" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a5/6e/6a81162f3e639c2b553fa6dbd6048a18438f740710f725b7e51263527759/minari-0.5.3.tar.gz", hash = "sha256:8b749b06390ce6d5814b6d23dd24a5a44fa142f65f807bf6a249572d5380cc4b", size = 51052, upload-time = "2025-04-17T18:16:31.82Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/a7/59f64ca35a089bad904c60a138bbf4f392de0b29d79e7751a8f1fbe0b4f2/minari-0.5.3-py3-none-any.whl", hash = "sha256:fc9587ddc3e7b1877185ace33f530b355cd1ec7e072f8df833654cb48d2435c4", size = 56087, upload-time = "2025-04-17T18:16:30.568Z" },
 ]
 
 [[package]]
