@@ -771,28 +771,112 @@ def get_default_fps(env):
     return _get_default_fps__alepy(env_id)
 
 
-def _list_environments__alepy():
-    print("=== Atari Environments ===")
+def _get_atari_envs() -> list[str]:
     try:
         import ale_py
         gym.register_envs(ale_py)
-        atari_ids = sorted(
+        return sorted(
             env_id
             for env_id in gym.envs.registry.keys()
             if str(gym.spec(env_id).entry_point) == "ale_py.env:AtariEnv"
         )
-        for env_id in atari_ids:
-            print(env_id)
-    except Exception as e:
-        print(f"Could not list Atari environments: {e}")
+    except Exception:
+        return []
 
 
-def _list_environments__stableretro():
+def _get_stableretro_envs(imported_only: bool = False) -> list[str]:
     try:
         import retro
         all_games = sorted(retro.data.list_games(retro.data.Integrations.ALL))
-        if all_games:
-            print("\n=== Stable-Retro Games ===")
+        if imported_only:
+            result = []
+            for game in all_games:
+                try:
+                    retro.data.get_romfile_path(game, retro.data.Integrations.ALL)
+                    result.append(game)
+                except FileNotFoundError:
+                    pass
+            return result
+        return all_games
+    except Exception:
+        return []
+
+
+def _get_vizdoom_envs() -> list[str]:
+    try:
+        import vizdoom
+        import vizdoom.gymnasium_wrapper
+        return sorted(
+            env_id for env_id in gym.envs.registry.keys() if env_id.startswith("Vizdoom")
+        )
+    except Exception:
+        return []
+
+
+def select_environment_interactive() -> str:
+    from simple_term_menu import TerminalMenu
+
+    atari_envs = _get_atari_envs()
+    retro_envs = _get_stableretro_envs(imported_only=True)
+    vizdoom_envs = _get_vizdoom_envs()
+
+    entries = []
+    env_id_map = []
+
+    for env_id in atari_envs:
+        entries.append(f"[Atari]  {env_id}")
+        env_id_map.append(env_id)
+    if atari_envs and (retro_envs or vizdoom_envs):
+        entries.append("")
+        env_id_map.append(None)
+
+    for env_id in retro_envs:
+        entries.append(f"[Stable-Retro]  {env_id}")
+        env_id_map.append(env_id)
+    if retro_envs and vizdoom_envs:
+        entries.append("")
+        env_id_map.append(None)
+
+    for env_id in vizdoom_envs:
+        entries.append(f"[VizDoom]  {env_id}")
+        env_id_map.append(env_id)
+
+    if not entries:
+        print("No environments found. Install ale-py, stable-retro, or vizdoom.")
+        raise SystemExit(1)
+
+    menu = TerminalMenu(
+        entries,
+        title="Select an environment:\n",
+        show_search_hint=True,
+        search_key="/",
+        skip_empty_entries=True,
+    )
+
+    selected_index = menu.show()
+    if selected_index is None:
+        print("No environment selected.")
+        raise SystemExit(0)
+
+    return env_id_map[selected_index]
+
+
+def _list_environments__alepy():
+    print("=== Atari Environments ===")
+    atari_ids = _get_atari_envs()
+    if atari_ids:
+        for env_id in atari_ids:
+            print(env_id)
+    else:
+        print("Could not list Atari environments.")
+
+
+def _list_environments__stableretro():
+    all_games = _get_stableretro_envs()
+    if all_games:
+        print("\n=== Stable-Retro Games ===")
+        try:
+            import retro
             for game in all_games:
                 try:
                     retro.data.get_romfile_path(game, retro.data.Integrations.ALL)
@@ -800,28 +884,27 @@ def _list_environments__stableretro():
                 except FileNotFoundError:
                     status = "(missing ROM)"
                 print(f"{game} {status}")
-        else:
-            print("\nStable-Retro package installed but no games found.")
-    except Exception as e:
-        print(f"\nStable-Retro not installed: {e}")
+        except Exception as e:
+            print(f"\nStable-Retro not installed: {e}")
+    else:
+        print("\nStable-Retro not installed or no games found.")
 
 
 def _list_environments__vizdoom():
-    try:
-        import vizdoom
-        import vizdoom.gymnasium_wrapper
-        vizdoom_ids = [
-            env_id for env_id in gym.envs.registry.keys() if env_id.startswith("Vizdoom")
-        ]
-        if vizdoom_ids:
-            print("\n=== VizDoom Environments ===")
-            for env_id in vizdoom_ids:
-                print(env_id)
-        if getattr(vizdoom, "wads", None):
-            print("\nAvailable WADs:")
-            for wad in vizdoom.wads:
-                print(wad)
-    except Exception:
+    vizdoom_ids = _get_vizdoom_envs()
+    if vizdoom_ids:
+        print("\n=== VizDoom Environments ===")
+        for env_id in vizdoom_ids:
+            print(env_id)
+        try:
+            import vizdoom
+            if getattr(vizdoom, "wads", None):
+                print("\nAvailable WADs:")
+                for wad in vizdoom.wads:
+                    print(wad)
+        except Exception:
+            pass
+    else:
         print("\nVizDoom not installed.")
 
 
@@ -836,13 +919,13 @@ async def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     parser_record = subparsers.add_parser("record", help="Record gameplay")
-    parser_record.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser_record.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_record.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
     parser_record.add_argument("--dry-run", action="store_true", default=False,
         help="Record without uploading to Hugging Face (no HF account required)")
 
     parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
-    parser_playback.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
+    parser_playback.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_playback.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
 
     subparsers.add_parser("list_environments", help="List available environments")
@@ -853,9 +936,11 @@ async def main():
         list_environments()
         return
 
-    _lazy_init()
-
     env_id = args.env_id
+    if env_id is None:
+        env_id = select_environment_interactive()
+
+    _lazy_init()
     env = create_env(env_id)
     fps = args.fps if args.fps is not None else get_default_fps(env)
 

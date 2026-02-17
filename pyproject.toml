@@ -15,4 +15,5 @@ dependencies = [
     "datasets",
     "tqdm",
     "huggingface-hub",
+    "simple-term-menu",
 ]
