@@ -1,6 +1,8 @@
 import re
 import os
 import time
+import json
+import shutil
 import threading
 import asyncio
 import tempfile
@@ -13,6 +15,20 @@ load_dotenv(override=True)  # Load environment variables from .env file
 import gymnasium as gym
 
 _initialized = False
+
+
+def _json_default(obj):
+    """JSON serializer for numpy types found in info dicts."""
+    import numpy as _np
+    if isinstance(obj, _np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (_np.integer,)):
+        return int(obj)
+    if isinstance(obj, (_np.floating,)):
+        return float(obj)
+    if isinstance(obj, (_np.bool_,)):
+        return bool(obj)
+    return str(obj)
 
 
 def _build_key_name_map(pygame):
@@ -291,6 +307,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.actions = []
         self.steps = []
         self.timestamps = []
+        self.rewards = []
+        self.terminateds = []
+        self.truncateds = []
+        self.infos = []
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -726,6 +746,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 "image": self.frames,
                 "step": self.steps,
                 "action": self.actions,
+                "reward": self.rewards,
+                "terminated": self.terminateds,
+                "truncated": self.truncateds,
+                "info": self.infos,
             }
             dataset = Dataset.from_dict(data)
             dataset = dataset.cast_column("image", HFImage())
@@ -752,6 +776,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.actions.clear()
         self.steps.clear()
         self.timestamps.clear()
+        self.rewards.clear()
+        self.terminateds.clear()
+        self.truncateds.clear()
+        self.infos.clear()
 
         episode_id = int(time.time())
         obs, _ = self.env.reset()
@@ -769,7 +797,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
             if not self._input_loop(): break
             action = self._get_user_action()
             self._record_frame(episode_id, step, obs, action)
-            obs, _, terminated, truncated, _ = self.env.step(action)
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            if self.recording:
+                self.rewards.append(float(reward))
+                self.terminateds.append(bool(terminated))
+                self.truncateds.append(bool(truncated))
+                self.infos.append(json.dumps(info, default=_json_default))
             done = terminated or truncated
             self._render_frame(obs)
             elapsed = time.monotonic() - frame_start
@@ -825,6 +858,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         """
         Clean up resources and save dataset if needed.
         """
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
         pygame.quit()
         super().close()
 
