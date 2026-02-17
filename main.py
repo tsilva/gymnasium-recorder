@@ -333,6 +333,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._fps = None
         self._fps_changed_at = 0
         self._episode_count = 0
+        self._cumulative_reward = 0.0
+        self._overlay_visible = True
         self._recorded_dataset = None
 
     def _ensure_screen(self, frame):
@@ -394,6 +396,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return False
+                if event.key == pygame.K_TAB:
+                    self._overlay_visible = not self._overlay_visible
+                    continue
                 if event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                     if self._fps is not None:
                         self._fps = max(1, self._fps + 5)
@@ -635,8 +640,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         # Update display with scaled frame
         self.screen.blit(scaled_surface, (0, 0))
-        self._render_fps_overlay()
-        self._render_episode_overlay()
+        if self._overlay_visible:
+            self._render_fps_overlay()
+            self._render_episode_overlay()
         pygame.display.flip()
 
     def _render_fps_overlay(self):
@@ -674,12 +680,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(text_alpha, (bg_x + padding, bg_y + padding))
 
     def _render_episode_overlay(self):
-        """Render a persistent episode counter badge in the top-left corner during recording."""
+        """Render a persistent HUD badge in the top-left corner during recording."""
         if not self.recording or self._episode_count < 1 or self.screen is None:
             return
 
+        parts = [f"EP {self._episode_count}", f"R {self._cumulative_reward:.0f}"]
+        if self._fps is not None:
+            parts.append(f"{self._fps} FPS")
         font = pygame.font.Font(None, 24)
-        text = font.render(f"EP {self._episode_count}", True, (255, 255, 255))
+        text = font.render("  ".join(parts), True, (255, 255, 255))
         text_rect = text.get_rect()
 
         padding = 6
@@ -733,8 +742,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 table.add_row(pygame.key.name(key), label, f"action {action_idx}")
 
         table.add_section()
-        table.add_row("space", "Start recording", "")
-        table.add_row("escape", "Exit", "")
+        table.add_row("[dim]escape[/]", "[dim]Exit[/]", "")
+        table.add_row("[dim]+/-[/]", "[dim]Adjust FPS (±5)[/]", "")
 
         console.print(Panel(table, title=f"[{STYLE_ENV}]{env_type}[/] Key Mappings", border_style=STYLE_INFO, expand=False))
 
@@ -817,6 +826,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         episode_id = int(time.time())
         self._episode_count = 1
+        self._cumulative_reward = 0.0
         obs, _ = self.env.reset()
         self._ensure_screen(obs)  # Ensure pygame window is created after first obs
         self._render_frame(obs)
@@ -832,6 +842,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             action = self._get_user_action()
             self._record_frame(episode_id, step, obs, action)
             obs, reward, terminated, truncated, info = self.env.step(action)
+            self._cumulative_reward += float(reward)
             if self.recording:
                 self.rewards.append(float(reward))
                 self.terminateds.append(bool(terminated))
@@ -849,6 +860,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             if terminated or truncated:
                 obs, _ = self.env.reset()
                 self._episode_count += 1
+                self._cumulative_reward = 0.0
                 episode_id = int(time.time())
                 step = 0
                 self._render_frame(obs)
@@ -1372,10 +1384,17 @@ def select_environment_interactive() -> str:
 
     menu = TerminalMenu(
         entries,
-        title="Select an environment:\n",
+        title="  Select Environment\n",
+        menu_cursor="  > ",
+        menu_cursor_style=("fg_cyan", "bold"),
+        menu_highlight_style=("bold", "fg_cyan"),
+        search_highlight_style=("fg_black", "bg_cyan", "bold"),
         show_search_hint=True,
+        show_search_hint_text="  (type / to search)",
         search_key="/",
         skip_empty_entries=True,
+        status_bar="  ↑↓ navigate · / search · Enter select · Esc cancel",
+        status_bar_style=("fg_gray",),
     )
 
     selected_index = menu.show()
