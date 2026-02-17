@@ -4,7 +4,7 @@
   # gymnasium-recorder
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-  [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+  [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
   [![Hugging Face](https://img.shields.io/badge/HuggingFace-Datasets-yellow.svg)](https://huggingface.co/docs/datasets)
 
   **🎮 Record and replay gameplay from Gymnasium environments as Hugging Face datasets 📊**
@@ -83,9 +83,50 @@ Shows all available Atari, Stable-Retro, and VizDoom environments.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (for dependency management)
 - Hugging Face account and token (for dataset uploads)
+
+### macOS Apple Silicon Note
+
+The `stable-retro` package on PyPI ships a broken wheel for Apple Silicon (x86_64 binary mislabeled as arm64). This repo includes a pre-built native ARM64 wheel in `wheels/` that is installed automatically by `uv sync` - no extra steps needed.
+
+<details>
+<summary>Rebuilding the wheel from source (only needed for new Python versions or stable-retro updates)</summary>
+
+```bash
+# 1. Clone with all submodules
+git clone --recursive https://github.com/Farama-Foundation/stable-retro.git /tmp/stable-retro-build
+cd /tmp/stable-retro-build
+
+# 2. Disable the pce core (broken zlib on macOS)
+#    In CMakeLists.txt, change:
+#      add_core(pce mednafen_pce_fast)
+#    To:
+#      if(NOT APPLE)
+#        add_core(pce mednafen_pce_fast)
+#      endif()
+
+# 3. Configure with Apple Clang (NOT Homebrew gcc)
+cmake . -G "Unix Makefiles" \
+  -DCMAKE_C_COMPILER=/usr/bin/cc \
+  -DCMAKE_CXX_COMPILER=/usr/bin/c++ \
+  -DPYEXT_SUFFIX=.cpython-312-darwin.so
+
+# 4. Build
+make -j8 stable_retro
+
+# 5. Create wheel
+pip wheel . --no-build-isolation -w /path/to/gymnasium-recorder/wheels/
+
+# 6. Update pyproject.toml [tool.uv.sources] with the new wheel filename
+```
+
+**Why Clang?** Homebrew's GCC passes `--exclude-libs` to the linker, which Apple's `ld` doesn't support. Using `/usr/bin/cc` (Apple Clang) avoids this.
+
+**Why skip pce?** The PC Engine core bundles an old zlib that redefines `fdopen` as `NULL`, which conflicts with the macOS SDK headers.
+
+</details>
 
 ## How It Works
 

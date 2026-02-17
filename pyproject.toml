@@ -3,7 +3,7 @@ name = "gymnasium-recorder"
 version = "0.1.0"
 description = "Record and replay gameplay from Gymnasium environments as Hugging Face datasets"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "pillow",
@@ -16,13 +16,10 @@ dependencies = [
     "tqdm",
     "huggingface-hub",
     "simple-term-menu",
-    # NOTE: PyPI 0.9.9 arm64 wheel is mislabeled (contains x86_64 binary).
-    # On Apple Silicon, build from source after `uv sync`:
-    #   git clone --recursive https://github.com/Farama-Foundation/stable-retro.git /tmp/stable-retro-build
-    #   cd /tmp/stable-retro-build
-    #   # Disable pce core (broken zlib on macOS) in CMakeLists.txt
-    #   cmake . -DCMAKE_C_COMPILER=/usr/bin/cc -DCMAKE_CXX_COMPILER=/usr/bin/c++ -DPYEXT_SUFFIX=.cpython-312-darwin.so
-    #   make -j8 stable_retro
-    #   uv pip install . --no-build-isolation
     "stable-retro",
 ]
+
+[tool.uv.sources]
+# PyPI 0.9.9 arm64 wheel is mislabeled (contains x86_64 binary).
+# Use local ARM64 wheel built from source with Clang on Apple Silicon.
+stable-retro = { path = "wheels/stable_retro-0.9.9-cp312-cp312-macosx_26_0_arm64.whl", marker = "sys_platform == 'darwin'" }

@@ -316,6 +316,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self._fps = None
         self._fps_changed_at = 0
+        self._episode_count = 0
 
     def _ensure_screen(self, frame):
         """
@@ -618,6 +619,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         # Update display with scaled frame
         self.screen.blit(scaled_surface, (0, 0))
         self._render_fps_overlay()
+        self._render_episode_overlay()
         pygame.display.flip()
 
     def _render_fps_overlay(self):
@@ -653,6 +655,26 @@ class DatasetRecorderWrapper(gym.Wrapper):
         bg_y = 8
         self.screen.blit(bg, (bg_x, bg_y))
         self.screen.blit(text_alpha, (bg_x + padding, bg_y + padding))
+
+    def _render_episode_overlay(self):
+        """Render a persistent episode counter badge in the top-left corner during recording."""
+        if not self.recording or self._episode_count < 1 or self.screen is None:
+            return
+
+        font = pygame.font.Font(None, 24)
+        text = font.render(f"EP {self._episode_count}", True, (255, 255, 255))
+        text_rect = text.get_rect()
+
+        padding = 6
+        bg_w = text_rect.width + padding * 2
+        bg_h = text_rect.height + padding * 2
+        bg = pygame.Surface((bg_w, bg_h), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 180))
+
+        bg_x = 8
+        bg_y = 8
+        self.screen.blit(bg, (bg_x, bg_y))
+        self.screen.blit(text, (bg_x + padding, bg_y + padding))
 
     def _print_keymappings(self):
         """Print the current key mappings to the console."""
@@ -782,6 +804,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.infos.clear()
 
         episode_id = int(time.time())
+        self._episode_count = 1
         obs, _ = self.env.reset()
         self._ensure_screen(obs)  # Ensure pygame window is created after first obs
         self._render_frame(obs)
@@ -790,9 +813,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
             return
         with self.key_lock:
             self.current_keys.clear()
-        done = False
         step = 0
-        while not done:
+        while True:
             frame_start = time.monotonic()
             if not self._input_loop(): break
             action = self._get_user_action()
@@ -803,7 +825,6 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 self.terminateds.append(bool(terminated))
                 self.truncateds.append(bool(truncated))
                 self.infos.append(json.dumps(info, default=_json_default))
-            done = terminated or truncated
             self._render_frame(obs)
             elapsed = time.monotonic() - frame_start
             remaining = (1.0 / self._fps) - elapsed
@@ -812,6 +833,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
             else:
                 await asyncio.sleep(0)
             step += 1
+
+            if terminated or truncated:
+                obs, _ = self.env.reset()
+                self._episode_count += 1
+                episode_id = int(time.time())
+                step = 0
+                self._render_frame(obs)
 
     async def replay(self, actions, fps=None, total=None):
         if fps is None:
