@@ -366,13 +366,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.seeds = []
         self.frames = []
         self.actions = []
-        self.steps = []
-        self.timestamps = []
         self.rewards = []
         self.terminations = []
         self.truncations = []
         self.infos = []
-        self.is_terminal_observations = []
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -434,29 +431,28 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         path = self._save_frame_image(frame)
         self.episode_ids.append(episode_id)
-        self.seeds.append(seed)
-        self.steps.append(step)
+        self.seeds.append(seed if step == 0 else None)
         self.frames.append(path)
-        self.timestamps.append(time.time())
         self.actions.append(self._normalize_action(action))
-        self.is_terminal_observations.append(False)
 
-    def _record_terminal_observation(self, episode_id, seed, step, frame):
-        """Record a terminal observation row (Minari N+1 pattern)."""
+    def _record_terminal_observation(self, episode_id, frame):
+        """Record a terminal observation row (Minari N+1 pattern).
+
+        The N+1 observation captures the final state after the last step.
+        It has an empty action and null values for reward/termination/truncation/info
+        since no step was taken.
+        """
         if not self.recording: return
 
         path = self._save_frame_image(frame)
         self.episode_ids.append(episode_id)
-        self.seeds.append(seed)
-        self.steps.append(step)
+        self.seeds.append(None)
         self.frames.append(path)
-        self.timestamps.append(time.time())
         self.actions.append([])
-        self.rewards.append(0.0)
-        self.terminations.append(False)
-        self.truncations.append(False)
-        self.infos.append(json.dumps({}))
-        self.is_terminal_observations.append(True)
+        self.rewards.append(None)
+        self.terminations.append(None)
+        self.truncations.append(None)
+        self.infos.append(None)
 
     def _input_loop(self):
         """
@@ -891,13 +887,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.seeds.clear()
         self.frames.clear()
         self.actions.clear()
-        self.steps.clear()
-        self.timestamps.clear()
         self.rewards.clear()
         self.terminations.clear()
         self.truncations.clear()
         self.infos.clear()
-        self.is_terminal_observations.clear()
+
 
         episode_id = 0
         seed = int(time.time())
@@ -934,7 +928,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             step += 1
 
             if terminated or truncated:
-                self._record_terminal_observation(episode_id, seed, step, obs)
+                self._record_terminal_observation(episode_id, obs)
                 episode_id += 1
                 seed = int(time.time())
                 obs, _ = self.env.reset(seed=seed)
@@ -944,22 +938,19 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 self._render_frame(obs)
 
         # Record terminal observation on user exit (ESC)
-        if self.recording and self.frames and not self.is_terminal_observations[-1]:
-            self._record_terminal_observation(episode_id, seed, step, obs)
+        if self.recording and self.frames and self.actions[-1] != []:
+            self._record_terminal_observation(episode_id, obs)
 
         if self.recording and self.frames:
             data = {
                 "episode_id": self.episode_ids,
                 "seed": self.seeds,
-                "timestamp": self.timestamps,
                 "observation": self.frames,
-                "step": self.steps,
                 "action": self.actions,
                 "reward": self.rewards,
                 "termination": self.terminations,
                 "truncation": self.truncations,
                 "info": self.infos,
-                "is_terminal_observation": self.is_terminal_observations,
             }
             self._recorded_dataset = Dataset.from_dict(data)
             self._recorded_dataset = self._recorded_dataset.cast_column("observation", HFImage())
@@ -1226,7 +1217,8 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
             episodes[eid] = []
         episodes[eid].append(row)
     for eid in episodes:
-        episodes[eid].sort(key=lambda r: r["step"])
+        if "step" in episodes[eid][0]:
+            episodes[eid].sort(key=lambda r: r["step"])
 
     # Try to extract action/observation spaces from the environment
     action_space = None
@@ -1256,17 +1248,22 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
                 img = np.array(img)
             observations.append(img)
 
-            if row.get("is_terminal_observation", False):
+            # Detect terminal observation: explicit flag (old format) or empty action (new format)
+            is_terminal = row.get("is_terminal_observation", False)
+            action = row.get("action")
+            if is_terminal or (isinstance(action, list) and len(action) == 0) or action is None:
                 continue
 
-            action = row["action"]
             if isinstance(action, list) and len(action) == 1:
                 action = action[0]
             actions.append(action)
 
-            rewards.append(float(row["reward"]))
-            terminations.append(bool(row["termination"]))
-            truncations.append(bool(row["truncation"]))
+            reward = row.get("reward")
+            rewards.append(float(reward) if reward is not None else 0.0)
+            term = row.get("termination")
+            terminations.append(bool(term) if term is not None else False)
+            trunc = row.get("truncation")
+            truncations.append(bool(trunc) if trunc is not None else False)
 
         # Fallback for old datasets without terminal observation:
         # duplicate last obs to satisfy Minari N+1 requirement
@@ -1393,19 +1390,20 @@ def generate_dataset_card(dataset, env_id, repo_id):
         "",
         "## Dataset Structure",
         "",
-        "This dataset follows the [Minari](https://minari.farama.org/) data model (N+1 observations per episode).",
+        "Minari-compatible flat table format. Use `minari-export` for native [Minari](https://minari.farama.org/) HDF5 format.",
+        "",
+        "Each episode has N step rows plus one terminal observation row (N+1 pattern).",
+        "The terminal observation is the final state after the last step — it has an empty action",
+        "and null values for reward/termination/truncation/info.",
         "",
         "- **episode_id** (`int`): Sequential episode identifier (0-based)",
-        "- **seed** (`int`): RNG seed used for `env.reset()`",
-        "- **timestamp** (`float`): Unix timestamp of each frame",
+        "- **seed** (`int` or `null`): RNG seed used for `env.reset()` (set on first row of each episode, `null` on other rows)",
         "- **observation** (`Image`): RGB frame from the environment",
-        "- **step** (`int`): Step number within the episode",
-        "- **action** (`list`): Action taken at this step (empty for terminal observations)",
-        "- **reward** (`float`): Reward received",
-        "- **termination** (`bool`): Whether the episode terminated naturally",
-        "- **truncation** (`bool`): Whether the episode was truncated",
-        "- **info** (`str`): Additional environment info (JSON)",
-        "- **is_terminal_observation** (`bool`): Marks the N+1th observation row per episode",
+        "- **action** (`list`): Action taken at this step (`[]` for terminal observations)",
+        "- **reward** (`float` or `null`): Reward received (`null` on terminal observation rows)",
+        "- **termination** (`bool` or `null`): Whether the episode terminated naturally (`null` on terminal observation rows)",
+        "- **truncation** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
+        "- **info** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
         "",
         "## Usage",
         "",
@@ -1821,17 +1819,26 @@ async def main():
             except Exception:
                 total = None
         recorder = DatasetRecorderWrapper(env)
+        def _is_step_row(row):
+            """Filter out terminal observation rows (works for both old and new format)."""
+            if row.get("is_terminal_observation", False):
+                return False
+            action = row.get("action")
+            if action is None or (isinstance(action, list) and len(action) == 0):
+                return False
+            return True
+
         if args.verify:
             recorded_data = (
                 (row["action"], row["observation"], row["reward"], row["termination"], row["truncation"])
                 for row in loaded_dataset
-                if not row.get("is_terminal_observation", False)
+                if _is_step_row(row)
             )
             await recorder.replay(recorded_data, fps=fps, total=total, verify=True)
         else:
             actions = (
                 row["action"] for row in loaded_dataset
-                if not row.get("is_terminal_observation", False)
+                if _is_step_row(row)
             )
             await recorder.replay(actions, fps=fps, total=total)
 
