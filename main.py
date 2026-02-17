@@ -1113,8 +1113,14 @@ def save_dataset_locally(dataset, env_id):
     existing = load_local_dataset(env_id)
     if existing is not None:
         dataset = concatenate_datasets([existing, dataset])
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    dataset.save_to_disk(path)
+        # Save to temp dir first to avoid "can't overwrite itself" error
+        tmp_path = path + "_tmp"
+        dataset.save_to_disk(tmp_path)
+        shutil.rmtree(path)
+        os.rename(tmp_path, path)
+    else:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dataset.save_to_disk(path)
     console.print(f"Dataset saved locally ([{STYLE_PATH}]{path}[/])")
     return path
 
