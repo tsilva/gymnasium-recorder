@@ -428,11 +428,48 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     resolved[key] = idx
 
         self.key_to_action = resolved
+        self._atari_meaning_to_idx = meaning_to_idx
+        # Reverse map: pygame key -> meaning string (for composite action lookup)
+        self._atari_key_to_meaning = {}
+        for key, value in self._atari_key_bindings_raw.items():
+            if isinstance(value, str):
+                self._atari_key_to_meaning[key] = value.upper()
 
     def _get_atari_action(self):
         """Return the Discrete action index for Atari environments."""
         if self.key_to_action is None:
             self._resolve_atari_key_mapping()
+
+        # Collect all pressed meaning strings
+        pressed_meanings = set()
+        for key in self.current_keys:
+            if key in self._atari_key_to_meaning:
+                pressed_meanings.add(self._atari_key_to_meaning[key])
+
+        if not pressed_meanings:
+            return self.noop_action
+
+        # Build composite name following ALE convention: [UP|DOWN][RIGHT|LEFT][FIRE]
+        composite = ""
+        if "UP" in pressed_meanings:
+            composite += "UP"
+        elif "DOWN" in pressed_meanings:
+            composite += "DOWN"
+        if "RIGHT" in pressed_meanings:
+            composite += "RIGHT"
+        elif "LEFT" in pressed_meanings:
+            composite += "LEFT"
+        if "FIRE" in pressed_meanings:
+            composite += "FIRE"
+
+        if not composite:
+            return self.noop_action
+
+        # Try composite first, fall back to single key
+        if composite in self._atari_meaning_to_idx:
+            return self._atari_meaning_to_idx[composite]
+
+        # Fallback: return first matching single key
         for key in self.current_keys:
             if key in self.key_to_action:
                 return self.key_to_action[key]
@@ -960,6 +997,7 @@ def _get_atari_envs() -> list[str]:
             env_id
             for env_id in gym.envs.registry.keys()
             if str(gym.spec(env_id).entry_point) == "ale_py.env:AtariEnv"
+            and env_id.startswith("ALE/")
         )
     except Exception:
         return []
