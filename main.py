@@ -508,6 +508,29 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
 
+    def _print_keymappings(self):
+        """Print the current key mappings to the console."""
+        print("\n--- Key Mappings ---")
+        if hasattr(self.env, '_vizdoom') and self.env._vizdoom:
+            print("Environment: VizDoom")
+            for key, action_name in VIZDOOM_KEY_BINDINGS.items():
+                print(f"  {pygame.key.name(key):>12s}  ->  {action_name}")
+            print(f"  {'alt+left':>12s}  ->  MOVE_LEFT")
+            print(f"  {'alt+right':>12s}  ->  MOVE_RIGHT")
+        elif hasattr(self.env, '_stable_retro') and self.env._stable_retro:
+            platform = getattr(self.env.unwrapped, "system", None)
+            print(f"Environment: Stable-Retro ({platform})")
+            mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
+            for key, idx in mapping.items():
+                print(f"  {pygame.key.name(key):>12s}  ->  button {idx}")
+        else:
+            print("Environment: Atari")
+            for key, action_idx in ATARI_KEY_BINDINGS.items():
+                print(f"  {pygame.key.name(key):>12s}  ->  action {action_idx}")
+        print(f"  {'space':>12s}  ->  Start recording")
+        print(f"  {'escape':>12s}  ->  Exit")
+        print("--------------------\n")
+
     def _wait_for_start(self, start_key: int = None) -> bool:
         """Display overlay prompting the user to start.
 
@@ -591,6 +614,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         obs, _ = self.env.reset()
         self._ensure_screen(obs)  # Ensure pygame window is created after first obs
         self._render_frame(obs)
+        self._print_keymappings()
         if not self._wait_for_start():
             return
         with self.key_lock:
@@ -615,6 +639,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         obs, _ = self.env.reset()
         self._ensure_screen(obs)
         self._render_frame(obs)
+        self._print_keymappings()
         for action in tqdm(actions, total=total):
             # Convert stored actions back to the environment's expected format
             if isinstance(action, list):
