@@ -761,8 +761,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
     async def _record(self, fps=None):
         self.recording = True
         try:
-            await self.play(fps=fps)
+            await self._play(fps)  # bypass play() to avoid premature close()
             return self._recorded_dataset
+        except:
+            self.close()  # cleanup on error only
+            raise
         finally:
             self.recording = False
 
@@ -1452,6 +1455,7 @@ async def main():
         recorded_dataset = await recorder.record(fps=fps)
 
         save_dataset_locally(recorded_dataset, env_id)
+        recorder.close()  # cleanup temp files after dataset is saved
         print(f"To play back: uv run python main.py playback {env_id}")
 
         if not args.dry_run:
