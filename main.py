@@ -194,7 +194,7 @@ def _load_keymappings(pygame):
 DEFAULT_CONFIG = {
     "display": {"scale_factor": 2},
     "recording": {"jpeg_quality": 95},
-    "fps_defaults": {"atari": 60, "vizdoom": 35, "retro": 60},
+    "fps_defaults": {"atari": 90, "vizdoom": 45, "retro": 90},
     "dataset": {
         "repo_prefix": "GymnasiumRecording__",
         "license": "mit",
