@@ -18,6 +18,9 @@
 # task_categories = ["reinforcement-learning"]
 # commit_message = "Update dataset card"
 
+[storage]
+# local_dir = "~/.gymnasium-recorder/datasets"
+
 [overlay]
 # font_size = 48
 # text_color = [255, 255, 255]

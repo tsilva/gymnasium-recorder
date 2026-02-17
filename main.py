@@ -201,6 +201,9 @@ DEFAULT_CONFIG = {
         "task_categories": ["reinforcement-learning"],
         "commit_message": "Update dataset card",
     },
+    "storage": {
+        "local_dir": os.path.join(os.path.expanduser("~"), ".gymnasium-recorder", "datasets"),
+    },
     "overlay": {
         "font_size": 48,
         "text_color": [255, 255, 255],
@@ -238,7 +241,7 @@ def _lazy_init():
     global CONFIG
     global np, pygame, PILImage, tqdm
     global whoami, DatasetCard, DatasetCardData, HfApi
-    global Dataset, Value, Sequence, HFImage, load_dataset, load_dataset_builder, concatenate_datasets
+    global Dataset, Value, Sequence, HFImage, load_dataset, load_from_disk, load_dataset_builder, concatenate_datasets
     global START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS
 
     import numpy as np
@@ -252,6 +255,7 @@ def _lazy_init():
         Sequence,
         Image as HFImage,
         load_dataset,
+        load_from_disk,
         load_dataset_builder,
         concatenate_datasets,
     )
@@ -832,6 +836,82 @@ def env_id_to_hf_repo_id(env_id):
     return hf_repo_id
 
 
+def get_local_dataset_path(env_id):
+    """Return the local storage path for a given environment's dataset."""
+    env_id_underscored = env_id.replace("-", "_").replace("/", "_")
+    return os.path.join(CONFIG["storage"]["local_dir"], env_id_underscored)
+
+
+def save_dataset_locally(dataset, env_id):
+    """Save dataset to local disk, concatenating with existing data if present."""
+    path = get_local_dataset_path(env_id)
+    existing = load_local_dataset(env_id)
+    if existing is not None:
+        dataset = concatenate_datasets([existing, dataset])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dataset.save_to_disk(path)
+    print(f"Dataset saved locally ({path})")
+    return path
+
+
+def load_local_dataset(env_id):
+    """Load dataset from local disk. Returns None if not found."""
+    path = get_local_dataset_path(env_id)
+    if not os.path.exists(path):
+        return None
+    return load_from_disk(path)
+
+
+def filter_dataset_by_episode(dataset, episode_arg):
+    """Filter dataset by episode selection. Returns (filtered_dataset, episode_label)."""
+    episode_ids = sorted(set(dataset["episode_id"]))
+    if len(episode_ids) <= 1:
+        return dataset, None
+
+    if episode_arg == "all":
+        return dataset, f"all {len(episode_ids)} episodes"
+
+    if episode_arg == "latest":
+        target = episode_ids[-1]
+        idx = len(episode_ids)
+    else:
+        try:
+            n = int(episode_arg)
+            if n < 1 or n > len(episode_ids):
+                print(f"Episode {n} out of range (1-{len(episode_ids)}). Using latest.")
+                target = episode_ids[-1]
+                idx = len(episode_ids)
+            else:
+                target = episode_ids[n - 1]
+                idx = n
+        except ValueError:
+            print(f"Invalid episode '{episode_arg}'. Using latest.")
+            target = episode_ids[-1]
+            idx = len(episode_ids)
+
+    filtered = dataset.filter(lambda row: row["episode_id"] == target)
+    return filtered, f"episode {idx}/{len(episode_ids)}"
+
+
+def upload_local_dataset(env_id):
+    """Load local dataset and push to Hugging Face Hub."""
+    dataset = load_local_dataset(env_id)
+    if dataset is None:
+        print(f"No local dataset found for {env_id}")
+        print(f"  Expected at: {get_local_dataset_path(env_id)}")
+        return False
+    hf_repo_id = env_id_to_hf_repo_id(env_id)
+    try:
+        dataset.push_to_hub(hf_repo_id)
+        generate_dataset_card(dataset, env_id, hf_repo_id)
+        print(f"Dataset uploaded to {hf_repo_id}")
+        return True
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        print(f"To retry: uv run python main.py upload {env_id}")
+        return False
+
+
 def generate_dataset_card(dataset, env_id, repo_id):
     """Generate or update the dataset card for a given dataset repo."""
 
@@ -1203,6 +1283,11 @@ async def main():
     parser_playback.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_playback.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
     parser_playback.add_argument("--scale", type=int, default=None, help="Display scale factor (default: 2)")
+    parser_playback.add_argument("--episode", type=str, default="latest",
+        help="Episode to play: 'latest' (default), 'all', or episode number (1-based)")
+
+    parser_upload = subparsers.add_parser("upload", help="Upload local dataset to Hugging Face Hub")
+    parser_upload.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
 
     subparsers.add_parser("list_environments", help="List available environments")
 
@@ -1218,6 +1303,10 @@ async def main():
 
     _lazy_init()
 
+    if args.command == "upload":
+        upload_local_dataset(env_id)
+        return
+
     if hasattr(args, 'scale') and args.scale is not None:
         CONFIG["display"]["scale_factor"] = args.scale
     if hasattr(args, 'jpeg_quality') and args.jpeg_quality is not None:
@@ -1227,62 +1316,53 @@ async def main():
     fps = args.fps if args.fps is not None else get_default_fps(env)
 
     if args.command == "record":
-        dry_run = args.dry_run
-
-        hf_repo_id = None
-        loaded_dataset = None
-        if not dry_run:
-            hf_repo_id = env_id_to_hf_repo_id(env_id)
-            api = HfApi()
-            try:
-                api.dataset_info(hf_repo_id)
-                loaded_dataset = load_dataset(
-                    hf_repo_id,
-                    split="train",
-                    streaming=True,
-                )
-            except Exception:
-                loaded_dataset = None
-
         recorder = DatasetRecorderWrapper(env)
         recorded_dataset = await recorder.record(fps=fps)
 
-        if dry_run:
-            print("Dry run complete. Dataset not uploaded.")
-        else:
-            final_dataset = (
-                concatenate_datasets([loaded_dataset, recorded_dataset]) if loaded_dataset else recorded_dataset
-            )
-            upload = input("Upload dataset to Hugging Face Hub? [Y/n] ").strip().lower()
+        save_dataset_locally(recorded_dataset, env_id)
+        print(f"To play back: uv run python main.py playback {env_id}")
+
+        if not args.dry_run:
+            upload = input("Upload to Hugging Face Hub? [Y/n] ").strip().lower()
             if upload in ("", "y", "yes"):
-                final_dataset.push_to_hub(hf_repo_id)
-                generate_dataset_card(final_dataset, env_id, hf_repo_id)
+                if not upload_local_dataset(env_id):
+                    print(f"To retry: uv run python main.py upload {env_id}")
             else:
-                print("Skipping upload. Dataset was not pushed to the hub.")
+                print(f"To upload later: uv run python main.py upload {env_id}")
     elif args.command == "playback":
-        hf_repo_id = env_id_to_hf_repo_id(env_id)
-        loaded_dataset = None
-        api = HfApi()
-        try:
-            api.dataset_info(hf_repo_id)
-            loaded_dataset = load_dataset(
-                hf_repo_id,
-                split="train",
-                streaming=True,
-            )
-        except Exception:
-            loaded_dataset = None
-        assert loaded_dataset is not None, f"Dataset not found: {hf_repo_id}"
-        recorder = DatasetRecorderWrapper(env)
-        try:
-            builder = load_dataset_builder(hf_repo_id)
-            if builder.info.splits and "train" in builder.info.splits:
-                total = builder.info.splits["train"].num_examples
-            else:
+        loaded_dataset = load_local_dataset(env_id)
+        if loaded_dataset is not None:
+            loaded_dataset, ep_label = filter_dataset_by_episode(loaded_dataset, args.episode)
+            info = f"{len(loaded_dataset)} frames"
+            if ep_label:
+                info += f", {ep_label}"
+            print(f"Playing back from local dataset ({info})")
+            total = len(loaded_dataset)
+            actions = (row["action"] for row in loaded_dataset)
+        else:
+            print("No local dataset found, trying Hugging Face Hub...")
+            try:
+                hf_repo_id = env_id_to_hf_repo_id(env_id)
+                api = HfApi()
+                api.dataset_info(hf_repo_id)
+                loaded_dataset = load_dataset(hf_repo_id, split="train", streaming=True)
+            except Exception:
+                loaded_dataset = None
+            if loaded_dataset is None:
+                print(f"No dataset found for {env_id}.")
+                print(f"  Local path: {get_local_dataset_path(env_id)}")
+                print("  Record a session first: uv run python main.py record " + env_id)
+                return
+            try:
+                builder = load_dataset_builder(hf_repo_id)
+                if builder.info.splits and "train" in builder.info.splits:
+                    total = builder.info.splits["train"].num_examples
+                else:
+                    total = None
+            except Exception:
                 total = None
-        except Exception:
-            total = None
-        actions = (row["action"] for row in loaded_dataset)
+            actions = (row["action"] for row in loaded_dataset)
+        recorder = DatasetRecorderWrapper(env)
         await recorder.replay(actions, fps=fps, total=total)
 
 if __name__ == "__main__":

@@ -16,5 +16,13 @@ dependencies = [
     "tqdm",
     "huggingface-hub",
     "simple-term-menu",
+    # NOTE: PyPI 0.9.9 arm64 wheel is mislabeled (contains x86_64 binary).
+    # On Apple Silicon, build from source after `uv sync`:
+    #   git clone --recursive https://github.com/Farama-Foundation/stable-retro.git /tmp/stable-retro-build
+    #   cd /tmp/stable-retro-build
+    #   # Disable pce core (broken zlib on macOS) in CMakeLists.txt
+    #   cmake . -DCMAKE_C_COMPILER=/usr/bin/cc -DCMAKE_CXX_COMPILER=/usr/bin/c++ -DPYEXT_SUFFIX=.cpython-312-darwin.so
+    #   make -j8 stable_retro
+    #   uv pip install . --no-build-isolation
     "stable-retro",
 ]
