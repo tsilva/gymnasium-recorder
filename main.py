@@ -56,11 +56,11 @@ def _load_keymappings(pygame):
     default_start_key = pygame.K_SPACE
 
     default_atari = {
-        pygame.K_SPACE: 1,   # FIRE
-        pygame.K_UP: 2,      # UP
-        pygame.K_RIGHT: 3,   # RIGHT
-        pygame.K_LEFT: 4,    # LEFT
-        pygame.K_DOWN: 5,    # DOWN
+        pygame.K_SPACE: "FIRE",
+        pygame.K_UP: "UP",
+        pygame.K_RIGHT: "RIGHT",
+        pygame.K_LEFT: "LEFT",
+        pygame.K_DOWN: "DOWN",
     }
 
     default_vizdoom = {
@@ -276,7 +276,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
-        self.key_to_action = ATARI_KEY_BINDINGS
+        self.key_to_action = None  # Resolved lazily in _resolve_atari_key_mapping
+        self._atari_key_bindings_raw = ATARI_KEY_BINDINGS
         self._vizdoom_buttons = None
         self._vizdoom_vector_map = None
         self.noop_action = 0
@@ -392,8 +393,46 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         return {k: v for k, v in mapping.items() if v is not None}
 
+    def _resolve_atari_key_mapping(self):
+        """Resolve meaning-based Atari key bindings to action indices using the env's action meanings."""
+        # Standard fallback: meaning -> index for the default Atari action order
+        standard_meaning_to_idx = {
+            "NOOP": 0, "FIRE": 1, "UP": 2, "RIGHT": 3, "LEFT": 4, "DOWN": 5,
+            "UPRIGHT": 6, "UPLEFT": 7, "DOWNRIGHT": 8, "DOWNLEFT": 9,
+            "UPFIRE": 10, "RIGHTFIRE": 11, "LEFTFIRE": 12, "DOWNFIRE": 13,
+            "UPRIGHTFIRE": 14, "UPLEFTFIRE": 15, "DOWNRIGHTFIRE": 16, "DOWNLEFTFIRE": 17,
+        }
+
+        # Try to get actual meanings from the environment
+        meaning_to_idx = None
+        try:
+            meanings = self.env.unwrapped.get_action_meanings()
+            if meanings:
+                meaning_to_idx = {}
+                for idx, m in enumerate(meanings):
+                    meaning_to_idx[m.upper()] = idx
+        except (AttributeError, TypeError):
+            pass
+
+        if meaning_to_idx is None:
+            meaning_to_idx = standard_meaning_to_idx
+
+        resolved = {}
+        for key, value in self._atari_key_bindings_raw.items():
+            if isinstance(value, int):
+                # Legacy: direct index mapping (from old config files)
+                resolved[key] = value
+            elif isinstance(value, str):
+                idx = meaning_to_idx.get(value.upper())
+                if idx is not None:
+                    resolved[key] = idx
+
+        self.key_to_action = resolved
+
     def _get_atari_action(self):
         """Return the Discrete action index for Atari environments."""
+        if self.key_to_action is None:
+            self._resolve_atari_key_mapping()
         for key in self.current_keys:
             if key in self.key_to_action:
                 return self.key_to_action[key]
@@ -528,11 +567,13 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 print(f"  {pygame.key.name(key):>12s}  ->  {label}")
         else:
             print("Environment: Atari")
+            if self.key_to_action is None:
+                self._resolve_atari_key_mapping()
             try:
                 meanings = self.env.unwrapped.get_action_meanings()
             except (AttributeError, TypeError):
                 meanings = None
-            for key, action_idx in ATARI_KEY_BINDINGS.items():
+            for key, action_idx in self.key_to_action.items():
                 label = meanings[action_idx] if meanings and action_idx < len(meanings) else f"action {action_idx}"
                 print(f"  {pygame.key.name(key):>12s}  ->  {label}")
         print(f"  {'space':>12s}  ->  Start recording")
@@ -817,44 +858,98 @@ def _get_default_fps__alepy(env_id: str) -> int:
     return CONFIG["fps_defaults"]["atari"]
 
 
+def get_frameskip(env) -> int:
+    """Detect the frameskip value for an environment.
+
+    Returns the number of internal frames per env.step() call.
+    For stochastic frameskip tuples like (2, 5), returns the average.
+    """
+    env_id = getattr(env, "_env_id", "")
+
+    # VizDoom and Retro have different frameskip semantics; skip detection
+    if hasattr(env, '_vizdoom') and env._vizdoom:
+        return 1
+    if hasattr(env, '_stable_retro') and env._stable_retro:
+        return 1
+
+    # Check spec kwargs (works for gym.make() environments)
+    spec = getattr(env, 'spec', None)
+    if spec is not None:
+        kwargs = getattr(spec, 'kwargs', {}) or {}
+        fs = kwargs.get('frameskip')
+        if fs is not None:
+            if isinstance(fs, (tuple, list)) and len(fs) == 2:
+                return max(int(round((fs[0] + fs[1]) / 2)), 1)
+            try:
+                return max(int(fs), 1)
+            except (TypeError, ValueError):
+                pass
+
+    # ALE-specific attribute fallback
+    unwrapped = getattr(env, 'unwrapped', None)
+    if unwrapped is not None:
+        fs = getattr(unwrapped, '_frameskip', None)
+        if fs is not None:
+            if isinstance(fs, (tuple, list)) and len(fs) == 2:
+                return max(int(round((fs[0] + fs[1]) / 2)), 1)
+            try:
+                return max(int(fs), 1)
+            except (TypeError, ValueError):
+                pass
+
+    # Name-based: NoFrameskip means frameskip=1
+    if "NoFrameskip" in env_id:
+        return 1
+
+    return 1
+
+
 def get_default_fps(env):
     """Determine a sensible default FPS for an environment."""
+
+    base_fps = None
 
     for key in ("render_fps", "video.frames_per_second"):
         fps = env.metadata.get(key)
         if fps:
             try:
-                return int(round(float(fps)))
+                base_fps = int(round(float(fps)))
+                break
             except (TypeError, ValueError):
                 pass
 
-    env_id = getattr(env, "_env_id", "")
+    if base_fps is None:
+        env_id = getattr(env, "_env_id", "")
 
-    retro_platforms_60fps = {
-        "Nes",
-        "GameBoy",
-        "Snes",
-        "GbAdvance",
-        "GbColor",
-        "Genesis",
-        "PCEngine",
-        "Saturn",
-        "32x",
-        "Sms",
-        "GameGear",
-        "SCD",
-    }
+        retro_platforms_60fps = {
+            "Nes",
+            "GameBoy",
+            "Snes",
+            "GbAdvance",
+            "GbColor",
+            "Genesis",
+            "PCEngine",
+            "Saturn",
+            "32x",
+            "Sms",
+            "GameGear",
+            "SCD",
+        }
 
-    if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps) or "Atari2600" in env_id:
-        return _get_default_fps__stableretro(env_id)
+        if any(env_id.endswith(f"-{plat}") for plat in retro_platforms_60fps) or "Atari2600" in env_id:
+            base_fps = _get_default_fps__stableretro(env_id)
+        elif "Vizdoom" in env_id or "vizdoom" in env_id:
+            base_fps = _get_default_fps__vizdoom(env_id)
+        else:
+            base_fps = _get_default_fps__alepy(env_id)
 
-    if "Vizdoom" in env_id or "vizdoom" in env_id:
-        return _get_default_fps__vizdoom(env_id)
+    frameskip = get_frameskip(env)
+    if frameskip > 1:
+        adjusted_fps = max(int(round(base_fps / frameskip)), 1)
+        print(f"[FPS] Base FPS={base_fps}, frameskip={frameskip} → adjusted to {adjusted_fps} FPS for human playability")
+        return adjusted_fps
 
-    if "NoFrameskip" in env_id or "ALE" in env_id:
-        return _get_default_fps__alepy(env_id)
-
-    return _get_default_fps__alepy(env_id)
+    return base_fps
 
 
 def _get_atari_envs() -> list[str]:

@@ -9,10 +9,11 @@
 start_key = "space"
 
 [atari]
-up = 1
-right = 2
-left = 3
-down = 4
+space = "FIRE"
+up = "UP"
+right = "RIGHT"
+left = "LEFT"
+down = "DOWN"
 
 [vizdoom]
 up = "MOVE_FORWARD"

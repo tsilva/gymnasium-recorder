@@ -16,4 +16,5 @@ dependencies = [
     "tqdm",
     "huggingface-hub",
     "simple-term-menu",
+    "stable-retro",
 ]
