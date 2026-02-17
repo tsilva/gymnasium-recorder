@@ -1,0 +1,26 @@
+# Configuration for gymnasium-recorder
+# Uncomment and modify values to customize. All values shown are defaults.
+
+[display]
+# scale_factor = 2
+
+[recording]
+# jpeg_quality = 95
+
+[fps_defaults]
+# atari = 15
+# vizdoom = 35
+# retro = 60
+
+[dataset]
+# repo_prefix = "GymnasiumRecording__"
+# license = "mit"
+# task_categories = ["reinforcement-learning"]
+# commit_message = "Update dataset card"
+
+[overlay]
+# font_size = 48
+# text_color = [255, 255, 255]
+# background_color = [0, 0, 0, 180]
+# fps = 30
+# text = "Press SPACE to start"
