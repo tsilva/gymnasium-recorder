@@ -112,73 +112,73 @@ def _load_keymappings(pygame):
 
     default_retro = {
         "Nes": {
-            pygame.K_z: 0, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8,
         },
         "Atari2600": {
-            pygame.K_z: 0, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7,
         },
         "Snes": {
-            pygame.K_z: 0, pygame.K_a: 1, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_a: 1, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8, pygame.K_s: 9,
             pygame.K_q: 10, pygame.K_w: 11,
         },
         "GbAdvance": {
-            pygame.K_z: 0, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8, pygame.K_a: 10,
             pygame.K_s: 11,
         },
         "GameBoy": {
-            pygame.K_z: 0, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8,
         },
         "GbColor": {
-            pygame.K_z: 0, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8,
         },
         "PCEngine": {
-            pygame.K_x: 0, pygame.K_c: 1, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_x: 0, pygame.K_c: 1, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_z: 8, pygame.K_a: 9,
             pygame.K_s: 10, pygame.K_d: 11,
         },
         "Saturn": {
-            pygame.K_x: 0, pygame.K_z: 1, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_x: 0, pygame.K_z: 1, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_c: 8, pygame.K_a: 9,
             pygame.K_s: 10, pygame.K_d: 11,
         },
         "32x": {
-            pygame.K_x: 0, pygame.K_z: 1, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_x: 0, pygame.K_z: 1, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_c: 8, pygame.K_a: 9,
             pygame.K_s: 10, pygame.K_d: 11,
         },
         "Genesis": {
-            pygame.K_x: 0, pygame.K_z: 1, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_x: 0, pygame.K_z: 1, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_c: 8, pygame.K_a: 9,
             pygame.K_s: 10, pygame.K_d: 11,
         },
         "Sms": {
-            pygame.K_z: 0, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8,
         },
         "GameGear": {
-            pygame.K_z: 0, pygame.K_RETURN: 3,
+            pygame.K_z: 0, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_x: 8,
         },
         "SCD": {
-            pygame.K_x: 0, pygame.K_z: 1, pygame.K_TAB: 2, pygame.K_RETURN: 3,
+            pygame.K_x: 0, pygame.K_z: 1, pygame.K_n: 2, pygame.K_m: 3,
             pygame.K_UP: 4, pygame.K_DOWN: 5, pygame.K_LEFT: 6,
             pygame.K_RIGHT: 7, pygame.K_c: 8, pygame.K_a: 9,
             pygame.K_s: 10, pygame.K_d: 11,
@@ -726,9 +726,31 @@ class DatasetRecorderWrapper(gym.Wrapper):
             env_type = f"Stable-Retro ({platform})"
             buttons = getattr(self.env.unwrapped, "buttons", None)
             mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
+            # Group keys: D-pad first, then action buttons, then special (SELECT/START)
+            dpad_keys = {pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT}
+            special_labels = {"SELECT", "START"}
+            group_dpad = []
+            group_action = []
+            group_special = []
             for key, idx in mapping.items():
                 label = buttons[idx] if buttons and idx < len(buttons) else f"button {idx}"
-                table.add_row(pygame.key.name(key), label, f"idx {idx}")
+                row = (pygame.key.name(key), label, f"idx {idx}")
+                if key in dpad_keys:
+                    group_dpad.append(row)
+                elif label.upper() in special_labels:
+                    group_special.append(row)
+                else:
+                    group_action.append(row)
+            for row in group_dpad:
+                table.add_row(*row)
+            if group_dpad and group_action:
+                table.add_section()
+            for row in group_action:
+                table.add_row(*row)
+            if group_action and group_special:
+                table.add_section()
+            for row in group_special:
+                table.add_row(*row)
         else:
             env_type = "Atari"
             if self.key_to_action is None:
