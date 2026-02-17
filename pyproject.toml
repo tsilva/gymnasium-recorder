@@ -1,0 +1,18 @@
+[project]
+name = "gymnasium-recorder"
+version = "0.1.0"
+description = "Record and replay gameplay from Gymnasium environments as Hugging Face datasets"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pillow",
+    "python-dotenv",
+    "pygame-ce",
+    "vizdoom",
+    "ale-py",
+    "gymnasium[atari]",
+    "datasets",
+    "tqdm",
+    "huggingface-hub",
+]

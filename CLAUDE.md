@@ -9,33 +9,33 @@ gymnasium-recorder is a Python tool for recording and replaying gameplay from Gy
 ## Development Setup
 
 ```bash
-# Create and activate conda environment
-source activate-env.sh
+# Install dependencies
+uv sync
 
 # Set up environment variables
 cp .env.example .env
 # Edit .env and add your HF_TOKEN
 ```
 
-The conda environment is defined in `environment.yml` and includes Python 3.11, gymnasium, pygame, datasets, and platform-specific game engines (ale-py, vizdoom).
+Dependencies are defined in `pyproject.toml` and include Python 3.11+, gymnasium, pygame, datasets, and platform-specific game engines (ale-py, vizdoom).
 
 ## Core Commands
 
 ### Recording gameplay
 ```bash
-python main.py record <env_id>
-python main.py record BreakoutNoFrameskip-v4 --fps 30
+uv run python main.py record <env_id>
+uv run python main.py record BreakoutNoFrameskip-v4 --fps 30
 ```
 
 ### Replaying recorded datasets
 ```bash
-python main.py playback <env_id>
-python main.py playback BreakoutNoFrameskip-v4 --fps 30
+uv run python main.py playback <env_id>
+uv run python main.py playback BreakoutNoFrameskip-v4 --fps 30
 ```
 
 ### Listing available environments
 ```bash
-python main.py list_environments
+uv run python main.py list_environments
 ```
 
 ## Architecture

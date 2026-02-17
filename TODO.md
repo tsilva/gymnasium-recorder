@@ -1,2 +1,0 @@
-- Add Doom WAD support
-- Add validation for dataset fields

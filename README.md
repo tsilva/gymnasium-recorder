@@ -4,7 +4,7 @@
   # gymnasium-recorder
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-  [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
+  [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
   [![Hugging Face](https://img.shields.io/badge/HuggingFace-Datasets-yellow.svg)](https://huggingface.co/docs/datasets)
 
   **🎮 Record and replay gameplay from Gymnasium environments as Hugging Face datasets 📊**
@@ -29,8 +29,8 @@
 git clone https://github.com/tsilva/gymnasium-recorder.git
 cd gymnasium-recorder
 
-# Set up environment and dependencies
-source activate-env.sh
+# Install dependencies
+uv sync
 
 # Configure Hugging Face token
 cp .env.example .env
@@ -42,9 +42,9 @@ cp .env.example .env
 ### Record gameplay
 
 ```bash
-python main.py record BreakoutNoFrameskip-v4
-python main.py record VizdoomBasic-v0 --fps 35
-python main.py record Airstriker-Genesis --fps 60
+uv run python main.py record BreakoutNoFrameskip-v4
+uv run python main.py record VizdoomBasic-v0 --fps 35
+uv run python main.py record Airstriker-Genesis --fps 60
 ```
 
 Press **Space** to start recording. Use **ESC** to stop and exit.
@@ -52,7 +52,7 @@ Press **Space** to start recording. Use **ESC** to stop and exit.
 ### Replay a dataset
 
 ```bash
-python main.py playback BreakoutNoFrameskip-v4
+uv run python main.py playback BreakoutNoFrameskip-v4
 ```
 
 Replays the recorded actions from your Hugging Face Hub dataset.
@@ -60,7 +60,7 @@ Replays the recorded actions from your Hugging Face Hub dataset.
 ### List available environments
 
 ```bash
-python main.py list_environments
+uv run python main.py list_environments
 ```
 
 Shows all available Atari, Stable-Retro, and VizDoom environments.
@@ -83,11 +83,9 @@ Shows all available Atari, Stable-Retro, and VizDoom environments.
 
 ## Requirements
 
-- Python 3.11
-- Conda (for environment management)
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) (for dependency management)
 - Hugging Face account and token (for dataset uploads)
-
-The conda environment is defined in `environment.yml` and includes gymnasium, pygame, datasets, and platform-specific game engines.
 
 ## How It Works
 

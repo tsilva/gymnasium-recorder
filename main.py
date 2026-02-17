@@ -1,25 +1,10 @@
 import re
 import os
 import time
-import numpy as np
-import pygame
 import threading
 import asyncio
 import tempfile
-import cv2
-from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
-from datasets import (
-    Dataset,
-    Value,
-    Sequence,
-    Image as HFImage,
-    load_dataset,
-    load_dataset_builder,
-    concatenate_datasets,
-)
-from huggingface_hub import whoami, DatasetCard, DatasetCardData
 import argparse
-from tqdm import tqdm
 
 from dotenv import load_dotenv
 load_dotenv(override=True)  # Load environment variables from .env file
@@ -27,191 +12,222 @@ load_dotenv(override=True)  # Load environment variables from .env file
 import gymnasium as gym
 
 REPO_PREFIX = "GymnasiumRecording__"
-START_KEY = pygame.K_SPACE
 
-# Default key mappings for each supported environment type
-ATARI_KEY_BINDINGS = {
-    pygame.K_UP: 1,
-    pygame.K_RIGHT: 2,
-    pygame.K_LEFT: 3,
-    pygame.K_DOWN: 4,
-}
+_initialized = False
 
-VIZDOOM_KEY_BINDINGS = {
-    pygame.K_UP: "MOVE_FORWARD",
-    pygame.K_DOWN: "MOVE_BACKWARD",
-    pygame.K_LEFT: "TURN_LEFT",
-    pygame.K_RIGHT: "TURN_RIGHT",
-    pygame.K_LSHIFT: "SPEED",
-    pygame.K_RSHIFT: "SPEED",
-    pygame.K_LCTRL: "ATTACK",
-    pygame.K_RCTRL: "ATTACK",
-    pygame.K_SPACE: "USE",
-}
-for i in range(1, 8):
-    VIZDOOM_KEY_BINDINGS[getattr(pygame, f"K_{i}")] = f"SELECT_WEAPON{i}"
+def _lazy_init():
+    """Import heavy dependencies and initialize key bindings on first use."""
+    global _initialized
+    if _initialized:
+        return
+    _initialized = True
 
-STABLE_RETRO_KEY_BINDINGS = {
-    "Nes": {
-        pygame.K_z: 0,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-    },
-    "Atari2600": {
-        pygame.K_z: 0,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-    },
-    "Snes": {
-        pygame.K_z: 0,
-        pygame.K_a: 1,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-        pygame.K_s: 9,
-        pygame.K_q: 10,
-        pygame.K_w: 11,
-    },
-    "GbAdvance": {
-        pygame.K_z: 0,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-        pygame.K_a: 10,
-        pygame.K_s: 11,
-    },
-    "GameBoy": {
-        pygame.K_z: 0,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-    },
-    "GbColor": {
-        pygame.K_z: 0,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-    },
-    "PCEngine": {
-        pygame.K_x: 0,
-        pygame.K_c: 1,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_z: 8,
-        pygame.K_a: 9,
-        pygame.K_s: 10,
-        pygame.K_d: 11,
-    },
-    "Saturn": {
-        pygame.K_x: 0,
-        pygame.K_z: 1,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_c: 8,
-        pygame.K_a: 9,
-        pygame.K_s: 10,
-        pygame.K_d: 11,
-    },
-    "32x": {
-        pygame.K_x: 0,
-        pygame.K_z: 1,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_c: 8,
-        pygame.K_a: 9,
-        pygame.K_s: 10,
-        pygame.K_d: 11,
-    },
-    "Genesis": {
-        pygame.K_x: 0,
-        pygame.K_z: 1,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_c: 8,
-        pygame.K_a: 9,
-        pygame.K_s: 10,
-        pygame.K_d: 11,
-    },
-    "Sms": {
-        pygame.K_z: 0,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-    },
-    "GameGear": {
-        pygame.K_z: 0,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_x: 8,
-    },
-    "SCD": {
-        pygame.K_x: 0,
-        pygame.K_z: 1,
-        pygame.K_TAB: 2,
-        pygame.K_RETURN: 3,
-        pygame.K_UP: 4,
-        pygame.K_DOWN: 5,
-        pygame.K_LEFT: 6,
-        pygame.K_RIGHT: 7,
-        pygame.K_c: 8,
-        pygame.K_a: 9,
-        pygame.K_s: 10,
-        pygame.K_d: 11,
-    },
-}
+    global np, pygame, PILImage, tqdm
+    global whoami, DatasetCard, DatasetCardData, HfApi
+    global Dataset, Value, Sequence, HFImage, load_dataset, load_dataset_builder, concatenate_datasets
+    global START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS
+
+    import numpy as np
+    import pygame
+    from PIL import Image as PILImage
+    from tqdm import tqdm
+    from huggingface_hub import whoami, DatasetCard, DatasetCardData, HfApi
+    from datasets import (
+        Dataset,
+        Value,
+        Sequence,
+        Image as HFImage,
+        load_dataset,
+        load_dataset_builder,
+        concatenate_datasets,
+    )
+
+    START_KEY = pygame.K_SPACE
+
+    # Default key mappings for each supported environment type
+    ATARI_KEY_BINDINGS = {
+        pygame.K_UP: 1,
+        pygame.K_RIGHT: 2,
+        pygame.K_LEFT: 3,
+        pygame.K_DOWN: 4,
+    }
+
+    VIZDOOM_KEY_BINDINGS = {
+        pygame.K_UP: "MOVE_FORWARD",
+        pygame.K_DOWN: "MOVE_BACKWARD",
+        pygame.K_LEFT: "TURN_LEFT",
+        pygame.K_RIGHT: "TURN_RIGHT",
+        pygame.K_LSHIFT: "SPEED",
+        pygame.K_RSHIFT: "SPEED",
+        pygame.K_LCTRL: "ATTACK",
+        pygame.K_RCTRL: "ATTACK",
+        pygame.K_SPACE: "USE",
+    }
+    for i in range(1, 8):
+        VIZDOOM_KEY_BINDINGS[getattr(pygame, f"K_{i}")] = f"SELECT_WEAPON{i}"
+
+    STABLE_RETRO_KEY_BINDINGS = {
+        "Nes": {
+            pygame.K_z: 0,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+        },
+        "Atari2600": {
+            pygame.K_z: 0,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+        },
+        "Snes": {
+            pygame.K_z: 0,
+            pygame.K_a: 1,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+            pygame.K_s: 9,
+            pygame.K_q: 10,
+            pygame.K_w: 11,
+        },
+        "GbAdvance": {
+            pygame.K_z: 0,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+            pygame.K_a: 10,
+            pygame.K_s: 11,
+        },
+        "GameBoy": {
+            pygame.K_z: 0,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+        },
+        "GbColor": {
+            pygame.K_z: 0,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+        },
+        "PCEngine": {
+            pygame.K_x: 0,
+            pygame.K_c: 1,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_z: 8,
+            pygame.K_a: 9,
+            pygame.K_s: 10,
+            pygame.K_d: 11,
+        },
+        "Saturn": {
+            pygame.K_x: 0,
+            pygame.K_z: 1,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_c: 8,
+            pygame.K_a: 9,
+            pygame.K_s: 10,
+            pygame.K_d: 11,
+        },
+        "32x": {
+            pygame.K_x: 0,
+            pygame.K_z: 1,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_c: 8,
+            pygame.K_a: 9,
+            pygame.K_s: 10,
+            pygame.K_d: 11,
+        },
+        "Genesis": {
+            pygame.K_x: 0,
+            pygame.K_z: 1,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_c: 8,
+            pygame.K_a: 9,
+            pygame.K_s: 10,
+            pygame.K_d: 11,
+        },
+        "Sms": {
+            pygame.K_z: 0,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+        },
+        "GameGear": {
+            pygame.K_z: 0,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_x: 8,
+        },
+        "SCD": {
+            pygame.K_x: 0,
+            pygame.K_z: 1,
+            pygame.K_TAB: 2,
+            pygame.K_RETURN: 3,
+            pygame.K_UP: 4,
+            pygame.K_DOWN: 5,
+            pygame.K_LEFT: 6,
+            pygame.K_RIGHT: 7,
+            pygame.K_c: 8,
+            pygame.K_a: 9,
+            pygame.K_s: 10,
+            pygame.K_d: 11,
+        },
+    }
 
 class DatasetRecorderWrapper(gym.Wrapper):
     """
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
     """
     def __init__(self, env):
+        _lazy_init()
         super().__init__(env)
 
         self.recording = False
@@ -266,9 +282,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     break
 
         frame_uint8 = frame.astype(np.uint8)
-        frame_bgr = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2BGR)
         path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.jpg")
-        cv2.imwrite(path, frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        PILImage.fromarray(frame_uint8).save(path, quality=95)
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
@@ -452,12 +467,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen.blit(scaled_surface, (0, 0))
         pygame.display.flip()
 
-    def _wait_for_start(self, start_key: int = START_KEY) -> bool:
+    def _wait_for_start(self, start_key: int = None) -> bool:
         """Display overlay prompting the user to start.
 
         Returns True if the start key was pressed, False if the user closed the
         window or pressed ESC.
         """
+        if start_key is None:
+            start_key = START_KEY
         if self.screen is None:
             return True
 
@@ -834,6 +851,8 @@ async def main():
     if args.command == "list_environments":
         list_environments()
         return
+
+    _lazy_init()
 
     env_id = args.env_id
     hf_repo_id = env_id_to_hf_repo_id(env_id)
