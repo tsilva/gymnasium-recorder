@@ -1402,7 +1402,7 @@ def list_environments():
 
 async def main():
     parser = argparse.ArgumentParser(description="Atari Gymnasium Recorder/Playback")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     parser_record = subparsers.add_parser("record", help="Record gameplay")
     parser_record.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
@@ -1427,6 +1427,11 @@ async def main():
     subparsers.add_parser("list_environments", help="List available environments")
 
     args = parser.parse_args()
+    if args.command is None:
+        args.command = "record"
+        for attr, default in [("env_id", None), ("fps", None), ("scale", None), ("jpeg_quality", None), ("dry_run", False)]:
+            if not hasattr(args, attr):
+                setattr(args, attr, default)
 
     if args.command == "list_environments":
         list_environments()
