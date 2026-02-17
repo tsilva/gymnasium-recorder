@@ -226,10 +226,10 @@ def _load_keymappings(pygame):
 
 DEFAULT_CONFIG = {
     "display": {"scale_factor": 2},
-    "recording": {"jpeg_quality": 95},
+    "recording": {},
     "fps_defaults": {"atari": 90, "vizdoom": 45, "retro": 90},
     "dataset": {
-        "repo_prefix": "GymnasiumRecording__",
+        "repo_prefix": "gymnasium-recorder__",
         "license": "mit",
         "task_categories": ["reinforcement-learning"],
         "commit_message": "Update dataset card",
@@ -415,8 +415,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     break
 
         frame_uint8 = frame.astype(np.uint8)
-        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.jpg")
-        PILImage.fromarray(frame_uint8).save(path, quality=CONFIG["recording"]["jpeg_quality"])
+        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
+        img = PILImage.fromarray(frame_uint8)
+        if img.getcolors(maxcolors=256) is not None:
+            img = img.convert("P")
+        img.save(path, format="PNG")
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
@@ -1168,7 +1171,7 @@ def upload_local_dataset(env_id):
     try:
         dataset.push_to_hub(hf_repo_id)
         generate_dataset_card(dataset, env_id, hf_repo_id)
-        console.print(f"[{STYLE_SUCCESS}]Dataset uploaded to {hf_repo_id}[/]")
+        console.print(f"[{STYLE_SUCCESS}]Dataset uploaded: https://huggingface.co/datasets/{hf_repo_id}[/]")
         return True
     except Exception as e:
         console.print(f"[{STYLE_FAIL}]Upload failed: {e}[/]")
@@ -1176,22 +1179,42 @@ def upload_local_dataset(env_id):
         return False
 
 
+def _detect_backend(env_id):
+    """Return backend name for metadata tags."""
+    if env_id in set(_get_stableretro_envs()):
+        return "stable-retro"
+    elif "Vizdoom" in env_id:
+        return "vizdoom"
+    else:
+        return "atari"
+
+
+def _size_category(n):
+    """Return HF size_categories string for a frame count."""
+    if n < 1000:
+        return "n<1K"
+    if n < 10000:
+        return "1K<n<10K"
+    if n < 100000:
+        return "10K<n<100K"
+    if n < 1000000:
+        return "100K<n<1M"
+    return "n>1M"
+
+
+_BACKEND_LABELS = {
+    "atari": "Atari (ALE-py)",
+    "vizdoom": "VizDoom",
+    "stable-retro": "Stable-Retro",
+}
+
+
 def generate_dataset_card(dataset, env_id, repo_id):
     """Generate or update the dataset card for a given dataset repo."""
 
-    # Dataset statistics
     frames = len(dataset)
     episodes = len(set(dataset["episode_id"]))
-
-    structure_lines = []
-    for name, feature in dataset.features.items():
-        structure_lines.append(f"- **{name}**: {feature}")
-    dataset_structure = "This dataset contains the following columns:\n" + "\n".join(structure_lines)
-
-    dataset_summary = (
-        f"This dataset contains {frames} frames recorded from the Gymnasium environment "
-        f"`{env_id}` across {episodes} episodes."
-    )
+    backend = _detect_backend(env_id)
 
     user_info = whoami()
     curator = user_info.get("name") or user_info.get("user") or "unknown"
@@ -1200,25 +1223,53 @@ def generate_dataset_card(dataset, env_id, repo_id):
         language="en",
         license=CONFIG["dataset"]["license"],
         task_categories=CONFIG["dataset"]["task_categories"],
+        tags=["gymnasium", backend, env_id],
+        size_categories=[_size_category(frames)],
         pretty_name=f"{env_id} Gameplay Dataset",
     )
 
-    # Build card content manually to avoid placeholder fields
     header = card_data.to_yaml()
     content_lines = [
         "---",
         header,
         "---",
         "",
-        f"# {card_data.pretty_name}",
+        f"# {env_id} Gameplay Dataset",
         "",
-        dataset_summary,
+        f"Human gameplay recordings from the Gymnasium environment `{env_id}`,",
+        f"captured using [gymnasium-recorder](https://github.com/tsilva/gymnasium-recorder).",
         "",
-        f"Environment ID: `{env_id}`",
+        "## Dataset Summary",
+        "",
+        "| Stat | Value |",
+        "|------|-------|",
+        f"| Total frames | {frames:,} |",
+        f"| Episodes | {episodes:,} |",
+        f"| Environment | `{env_id}` |",
+        f"| Backend | {_BACKEND_LABELS.get(backend, backend)} |",
         "",
         "## Dataset Structure",
-        dataset_structure,
         "",
+        "- **episode_id** (`int`): Episode identifier",
+        "- **timestamp** (`float`): Unix timestamp of each frame",
+        "- **image** (`Image`): RGB frame from the environment",
+        "- **step** (`int`): Step number within the episode",
+        "- **action** (`int` or `list`): Action taken at this step",
+        "- **reward** (`float`): Reward received",
+        "- **terminated** (`bool`): Whether the episode ended",
+        "- **truncated** (`bool`): Whether the episode was truncated",
+        "- **info** (`str`): Additional environment info (JSON)",
+        "",
+        "## Usage",
+        "",
+        "```python",
+        "from datasets import load_dataset",
+        f'ds = load_dataset("{repo_id}")',
+        "```",
+        "",
+        "## About",
+        "",
+        "Recorded with [gymnasium-recorder](https://github.com/tsilva/gymnasium-recorder).",
         f"Curated by: {curator}",
     ]
     card = DatasetCard("\n".join(content_lines))
@@ -1536,7 +1587,6 @@ async def main():
     parser_record.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_record.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
     parser_record.add_argument("--scale", type=int, default=None, help="Display scale factor (default: 2)")
-    parser_record.add_argument("--jpeg-quality", type=int, default=None, help="JPEG recording quality 1-100 (default: 95)")
     parser_record.add_argument("--dry-run", action="store_true", default=False,
         help="Record without uploading to Hugging Face (no HF account required)")
 
@@ -1558,7 +1608,7 @@ async def main():
     args = parser.parse_args()
     if args.command is None:
         args.command = "record"
-        for attr, default in [("env_id", None), ("fps", None), ("scale", None), ("jpeg_quality", None), ("dry_run", False)]:
+        for attr, default in [("env_id", None), ("fps", None), ("scale", None), ("dry_run", False)]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
 
@@ -1583,8 +1633,6 @@ async def main():
 
     if hasattr(args, 'scale') and args.scale is not None:
         CONFIG["display"]["scale_factor"] = args.scale
-    if hasattr(args, 'jpeg_quality') and args.jpeg_quality is not None:
-        CONFIG["recording"]["jpeg_quality"] = args.jpeg_quality
 
     env = create_env(env_id)
     fps = args.fps if args.fps is not None else get_default_fps(env)
