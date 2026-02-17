@@ -316,6 +316,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._fps = None
         self._fps_changed_at = 0
         self._episode_count = 0
+        self._recorded_dataset = None
 
     def _ensure_screen(self, frame):
         """
@@ -761,21 +762,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.recording = True
         try:
             await self.play(fps=fps)
-            data = {
-                "episode_id": self.episode_ids,
-                "timestamp": self.timestamps,
-                "image": self.frames,
-                "step": self.steps,
-                "action": self.actions,
-                "reward": self.rewards,
-                "terminated": self.terminateds,
-                "truncated": self.truncateds,
-                "info": self.infos,
-            }
-            dataset = Dataset.from_dict(data)
-            dataset = dataset.cast_column("image", HFImage())
-            return dataset
-        finally: 
+            return self._recorded_dataset
+        finally:
             self.recording = False
 
     async def play(self, fps=None):
@@ -839,6 +827,21 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 episode_id = int(time.time())
                 step = 0
                 self._render_frame(obs)
+
+        if self.recording and self.frames:
+            data = {
+                "episode_id": self.episode_ids,
+                "timestamp": self.timestamps,
+                "image": self.frames,
+                "step": self.steps,
+                "action": self.actions,
+                "reward": self.rewards,
+                "terminated": self.terminateds,
+                "truncated": self.truncateds,
+                "info": self.infos,
+            }
+            self._recorded_dataset = Dataset.from_dict(data)
+            self._recorded_dataset = self._recorded_dataset.cast_column("image", HFImage())
 
     def _extract_obs_image(self, obs):
         """Extract image array from observation, handling dict obs (e.g. VizDoom)."""
