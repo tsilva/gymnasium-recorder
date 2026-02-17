@@ -12,8 +12,6 @@ load_dotenv(override=True)  # Load environment variables from .env file
 
 import gymnasium as gym
 
-REPO_PREFIX = "GymnasiumRecording__"
-
 _initialized = False
 
 
@@ -192,6 +190,43 @@ def _load_keymappings(pygame):
     return start_key, atari, vizdoom, retro
 
 
+DEFAULT_CONFIG = {
+    "display": {"scale_factor": 2},
+    "recording": {"jpeg_quality": 95},
+    "fps_defaults": {"atari": 15, "vizdoom": 35, "retro": 60},
+    "dataset": {
+        "repo_prefix": "GymnasiumRecording__",
+        "license": "mit",
+        "task_categories": ["reinforcement-learning"],
+        "commit_message": "Update dataset card",
+    },
+    "overlay": {
+        "font_size": 48,
+        "text_color": [255, 255, 255],
+        "background_color": [0, 0, 0, 180],
+        "fps": 30,
+        "text": "Press SPACE to start",
+    },
+}
+
+CONFIG = None
+
+
+def _load_config():
+    """Load configuration from config.toml, falling back to defaults."""
+    import copy
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+    if not os.path.exists(config_path):
+        return config
+    with open(config_path, "rb") as f:
+        user_config = tomllib.load(f)
+    for section in config:
+        if section in user_config:
+            config[section].update(user_config[section])
+    return config
+
+
 def _lazy_init():
     """Import heavy dependencies and initialize key bindings on first use."""
     global _initialized
@@ -199,6 +234,7 @@ def _lazy_init():
         return
     _initialized = True
 
+    global CONFIG
     global np, pygame, PILImage, tqdm
     global whoami, DatasetCard, DatasetCardData, HfApi
     global Dataset, Value, Sequence, HFImage, load_dataset, load_dataset_builder, concatenate_datasets
@@ -220,6 +256,7 @@ def _lazy_init():
     )
 
     START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS = _load_keymappings(pygame)
+    CONFIG = _load_config()
 
 class DatasetRecorderWrapper(gym.Wrapper):
     """
@@ -264,7 +301,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     break
         if self.screen is None or self.frame_shape is None:
             self.frame_shape = frame.shape
-            self.screen = pygame.display.set_mode((self.frame_shape[1] * 2, self.frame_shape[0] * 2))
+            scale = CONFIG["display"]["scale_factor"]
+            self.screen = pygame.display.set_mode((self.frame_shape[1] * scale, self.frame_shape[0] * scale))
             pygame.display.set_caption(getattr(self.env, "_env_id", "Gymnasium Recorder"))
 
     def _record_frame(self, episode_id, step, frame, action):
@@ -282,7 +320,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         frame_uint8 = frame.astype(np.uint8)
         path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.jpg")
-        PILImage.fromarray(frame_uint8).save(path, quality=95)
+        PILImage.fromarray(frame_uint8).save(path, quality=CONFIG["recording"]["jpeg_quality"])
         self.episode_ids.append(episode_id)
         self.steps.append(step)
         self.frames.append(path)
@@ -445,7 +483,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
     def _render_frame(self, frame):
         """
-        Render a frame using pygame, scaled to 2x.
+        Render a frame using pygame, scaled by the configured scale factor.
         """
         # If frame is a dict (e.g., VizDoom), extract the image
         if isinstance(frame, dict):
@@ -456,11 +494,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._ensure_screen(frame)
         if frame.dtype != np.uint8:
             frame = frame.astype(np.uint8)
-        
+
         surface = pygame.surfarray.make_surface(frame.transpose(1, 0, 2))
 
-        # Scale the surface to 2x the original size
-        scaled_surface = pygame.transform.scale2x(surface)
+        scale = CONFIG["display"]["scale_factor"]
+        if scale == 2:
+            scaled_surface = pygame.transform.scale2x(surface)
+        else:
+            w, h = surface.get_size()
+            scaled_surface = pygame.transform.scale(surface, (w * scale, h * scale))
 
         # Update display with scaled frame
         self.screen.blit(scaled_surface, (0, 0))
@@ -477,10 +519,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
         if self.screen is None:
             return True
 
-        font = pygame.font.Font(None, 48)
-        text = font.render("Press SPACE to start", True, (255, 255, 255))
+        overlay_cfg = CONFIG["overlay"]
+        font = pygame.font.Font(None, overlay_cfg["font_size"])
+        text = font.render(overlay_cfg["text"], True, tuple(overlay_cfg["text_color"]))
         overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
+        overlay.fill(tuple(overlay_cfg["background_color"]))
         text_rect = text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2))
 
         clock = pygame.time.Clock()
@@ -497,7 +540,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             self.screen.blit(overlay, (0, 0))
             self.screen.blit(text, text_rect)
             pygame.display.flip()
-            clock.tick(30)
+            clock.tick(overlay_cfg["fps"])
 
     async def record(self, fps=None):
         """Record a gameplay session at the desired FPS."""
@@ -610,7 +653,7 @@ def env_id_to_hf_repo_id(env_id):
     user_info = whoami()
     username = user_info.get("name") or user_info.get("user") or user_info.get("username")
     env_id_underscored = env_id.replace("-", "_").replace("/", "_")
-    hf_repo_id = f"{username}/{REPO_PREFIX}{env_id_underscored}"
+    hf_repo_id = f"{username}/{CONFIG['dataset']['repo_prefix']}{env_id_underscored}"
     return hf_repo_id
 
 
@@ -636,8 +679,8 @@ def generate_dataset_card(dataset, env_id, repo_id):
 
     card_data = DatasetCardData(
         language="en",
-        license="mit",
-        task_categories=["reinforcement-learning"],
+        license=CONFIG["dataset"]["license"],
+        task_categories=CONFIG["dataset"]["task_categories"],
         pretty_name=f"{env_id} Gameplay Dataset",
     )
 
@@ -664,7 +707,7 @@ def generate_dataset_card(dataset, env_id, repo_id):
     card.push_to_hub(
         repo_id=repo_id,
         repo_type="dataset",
-        commit_message="Update dataset card",
+        commit_message=CONFIG["dataset"]["commit_message"],
     )
 
 def _create_env__stableretro(env_id):
@@ -718,17 +761,17 @@ def create_env(env_id):
 
 def _get_default_fps__stableretro(env_id: str) -> int:
     """Return a default FPS for stable-retro environments."""
-    return 60
+    return CONFIG["fps_defaults"]["retro"]
 
 
 def _get_default_fps__vizdoom(env_id: str) -> int:
     """Return a default FPS for VizDoom environments."""
-    return 35
+    return CONFIG["fps_defaults"]["vizdoom"]
 
 
 def _get_default_fps__alepy(env_id: str) -> int:
     """Return a default FPS for Atari environments."""
-    return 15
+    return CONFIG["fps_defaults"]["atari"]
 
 
 def get_default_fps(env):
@@ -838,12 +881,15 @@ async def main():
     parser_record = subparsers.add_parser("record", help="Record gameplay")
     parser_record.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_record.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+    parser_record.add_argument("--scale", type=int, default=None, help="Display scale factor (default: 2)")
+    parser_record.add_argument("--jpeg-quality", type=int, default=None, help="JPEG recording quality 1-100 (default: 95)")
     parser_record.add_argument("--dry-run", action="store_true", default=False,
         help="Record without uploading to Hugging Face (no HF account required)")
 
     parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
     parser_playback.add_argument("env_id", type=str, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
     parser_playback.add_argument("--fps", type=int, default=None, help="Frames per second for playback/recording")
+    parser_playback.add_argument("--scale", type=int, default=None, help="Display scale factor (default: 2)")
 
     subparsers.add_parser("list_environments", help="List available environments")
 
@@ -854,6 +900,11 @@ async def main():
         return
 
     _lazy_init()
+
+    if hasattr(args, 'scale') and args.scale is not None:
+        CONFIG["display"]["scale_factor"] = args.scale
+    if hasattr(args, 'jpeg_quality') and args.jpeg_quality is not None:
+        CONFIG["recording"]["jpeg_quality"] = args.jpeg_quality
 
     env_id = args.env_id
     env = create_env(env_id)
