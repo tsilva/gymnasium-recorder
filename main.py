@@ -273,7 +273,7 @@ def _lazy_init():
     global CONFIG
     global np, pygame, PILImage
     global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
-    global Dataset, HFImage, load_dataset, load_from_disk, load_dataset_builder, concatenate_datasets
+    global Dataset, HFImage, load_dataset, load_from_disk, load_dataset_builder
     global START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS
 
     import numpy as np
@@ -286,7 +286,6 @@ def _lazy_init():
         load_dataset,
         load_from_disk,
         load_dataset_builder,
-        concatenate_datasets,
     )
 
     START_KEY, ATARI_KEY_BINDINGS, VIZDOOM_KEY_BINDINGS, STABLE_RETRO_KEY_BINDINGS = _load_keymappings(pygame)
@@ -1114,19 +1113,12 @@ def get_local_dataset_path(env_id):
 
 
 def save_dataset_locally(dataset, env_id):
-    """Save dataset to local disk, concatenating with existing data if present."""
+    """Save dataset to local disk, replacing any existing data."""
     path = get_local_dataset_path(env_id)
-    existing = load_local_dataset(env_id)
-    if existing is not None:
-        dataset = concatenate_datasets([existing, dataset])
-        # Save to temp dir first to avoid "can't overwrite itself" error
-        tmp_path = path + "_tmp"
-        dataset.save_to_disk(tmp_path)
+    if os.path.exists(path):
         shutil.rmtree(path)
-        os.rename(tmp_path, path)
-    else:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        dataset.save_to_disk(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dataset.save_to_disk(path)
     console.print(f"Dataset saved locally ([{STYLE_PATH}]{path}[/])")
     return path
 
