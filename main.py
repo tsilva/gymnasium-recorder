@@ -1243,7 +1243,7 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
         ep_seed = rows[0].get("seed", 0)
 
         for row in rows:
-            img = row.get("observations") or row.get("observation")
+            img = row.get("observations", row.get("observation"))
             if not isinstance(img, np.ndarray):
                 img = np.array(img)
             observations.append(img)
