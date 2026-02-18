@@ -945,15 +945,15 @@ class DatasetRecorderWrapper(gym.Wrapper):
             data = {
                 "episode_id": self.episode_ids,
                 "seed": self.seeds,
-                "observation": self.frames,
-                "action": self.actions,
-                "reward": self.rewards,
-                "termination": self.terminations,
-                "truncation": self.truncations,
-                "info": self.infos,
+                "observations": self.frames,
+                "actions": self.actions,
+                "rewards": self.rewards,
+                "terminations": self.terminations,
+                "truncations": self.truncations,
+                "infos": self.infos,
             }
             self._recorded_dataset = Dataset.from_dict(data)
-            self._recorded_dataset = self._recorded_dataset.cast_column("observation", HFImage())
+            self._recorded_dataset = self._recorded_dataset.cast_column("observations", HFImage())
 
     def _extract_obs_image(self, obs):
         """Extract image array from observation, handling dict obs (e.g. VizDoom)."""
