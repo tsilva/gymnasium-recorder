@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "gymnasium-recorder"
 version = "0.1.0"
@@ -19,8 +23,14 @@ dependencies = [
     "stable-retro",
 ]
 
+[project.scripts]
+gymnasium-recorder = "main:cli"
+
 [project.optional-dependencies]
 minari = ["minari>=0.5.0"]
+
+[tool.hatch.build.targets.wheel]
+include = ["main.py"]
 
 [tool.uv.sources]
 # PyPI 0.9.9 arm64 wheel is mislabeled (contains x86_64 binary).

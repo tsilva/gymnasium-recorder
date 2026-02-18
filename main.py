@@ -1773,6 +1773,10 @@ async def main():
         recorder = DatasetRecorderWrapper(env)
         recorded_dataset = await recorder.record(fps=fps)
 
+        if recorded_dataset is None:
+            recorder.close()
+            return
+
         save_dataset_locally(recorded_dataset, env_id)
         recorder.close()  # cleanup temp files after dataset is saved
         console.print(f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]")
@@ -1842,5 +1846,8 @@ async def main():
             )
             await recorder.replay(actions, fps=fps, total=total)
 
-if __name__ == "__main__":
+def cli():
     asyncio.run(main())
+
+if __name__ == "__main__":
+    cli()
