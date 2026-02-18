@@ -939,6 +939,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         # Record terminal observation on user exit (ESC)
         if self.recording and self.frames and self.actions[-1] != []:
+            # Mark last real step as truncated: user exited mid-episode.
+            # Minari requires at least one True in terminations or truncations per episode.
+            self.truncations[-1] = True
             self._record_terminal_observation(episode_id, obs)
 
         if self.recording and self.frames:
