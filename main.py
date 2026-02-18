@@ -1243,26 +1243,25 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
         ep_seed = rows[0].get("seed", 0)
 
         for row in rows:
-            img = row["observation"]
+            img = row.get("observations") or row.get("observation")
             if not isinstance(img, np.ndarray):
                 img = np.array(img)
             observations.append(img)
 
-            # Detect terminal observation: explicit flag (old format) or empty action (new format)
-            is_terminal = row.get("is_terminal_observation", False)
-            action = row.get("action")
-            if is_terminal or (isinstance(action, list) and len(action) == 0) or action is None:
+            # Detect terminal observation by empty/missing actions
+            action = row.get("actions", row.get("action"))
+            if (isinstance(action, list) and len(action) == 0) or action is None:
                 continue
 
             if isinstance(action, list) and len(action) == 1:
                 action = action[0]
             actions.append(action)
 
-            reward = row.get("reward")
+            reward = row.get("rewards", row.get("reward"))
             rewards.append(float(reward) if reward is not None else 0.0)
-            term = row.get("termination")
+            term = row.get("terminations", row.get("termination"))
             terminations.append(bool(term) if term is not None else False)
-            trunc = row.get("truncation")
+            trunc = row.get("truncations", row.get("truncation"))
             truncations.append(bool(trunc) if trunc is not None else False)
 
         # Fallback for old datasets without terminal observation:
