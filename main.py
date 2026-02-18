@@ -1823,24 +1823,29 @@ async def main():
                 total = None
         recorder = DatasetRecorderWrapper(env)
         def _is_step_row(row):
-            """Filter out terminal observation rows (works for both old and new format)."""
-            if row.get("is_terminal_observation", False):
-                return False
-            action = row.get("action")
+            """Filter out terminal observation rows."""
+            action = row.get("actions", row.get("action"))
             if action is None or (isinstance(action, list) and len(action) == 0):
                 return False
             return True
 
         if args.verify:
             recorded_data = (
-                (row["action"], row["observation"], row["reward"], row["termination"], row["truncation"])
+                (
+                    row.get("actions", row.get("action")),
+                    row.get("observations", row.get("observation")),
+                    row.get("rewards", row.get("reward")),
+                    row.get("terminations", row.get("termination")),
+                    row.get("truncations", row.get("truncation")),
+                )
                 for row in loaded_dataset
                 if _is_step_row(row)
             )
             await recorder.replay(recorded_data, fps=fps, total=total, verify=True)
         else:
             actions = (
-                row["action"] for row in loaded_dataset
+                row.get("actions", row.get("action"))
+                for row in loaded_dataset
                 if _is_step_row(row)
             )
             await recorder.replay(actions, fps=fps, total=total)
