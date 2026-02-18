@@ -1396,7 +1396,7 @@ def generate_dataset_card(dataset, env_id, repo_id):
         "",
         "Each episode has N step rows plus one terminal observation row (N+1 pattern).",
         "The terminal observation is the final state after the last step — it has an empty action",
-        "and null values for reward/termination/truncation/info.",
+        "and null values for rewards/terminations/truncations/infos.",
         "",
         "- **episode_id** (`int`): Sequential episode identifier (0-based)",
         "- **seed** (`int` or `null`): RNG seed used for `env.reset()` (set on first row of each episode, `null` on other rows)",
