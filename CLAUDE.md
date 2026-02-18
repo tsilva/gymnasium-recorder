@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-gymnasium-recorder is a Python tool for recording and replaying gameplay from Gymnasium environments (Atari, Stable-Retro, VizDoom). It captures frames and actions, stores them as Hugging Face datasets, and can replay recordings to verify environment determinism.
+gymrec is a Python tool for recording and replaying gameplay from Gymnasium environments (Atari, Stable-Retro, VizDoom). It captures frames and actions, stores them as Hugging Face datasets, and can replay recordings to verify environment determinism.
 
 ## Development Setup
 

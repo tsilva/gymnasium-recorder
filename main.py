@@ -228,13 +228,13 @@ DEFAULT_CONFIG = {
     "display": {"scale_factor": 2},
     "fps_defaults": {"atari": 90, "vizdoom": 45, "retro": 90},
     "dataset": {
-        "repo_prefix": "gymnasium-recorder__",
+        "repo_prefix": "gymrec__",
         "license": "mit",
         "task_categories": ["reinforcement-learning"],
         "commit_message": "Update dataset card",
     },
     "storage": {
-        "local_dir": os.path.join(os.path.expanduser("~"), ".gymnasium-recorder", "datasets"),
+        "local_dir": os.path.join(os.path.expanduser("~"), ".gymrec", "datasets"),
     },
     "overlay": {
         "font_size": 48,
@@ -1277,7 +1277,7 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
 
     env_id_underscored = env_id.replace("-", "_").replace("/", "_")
     if dataset_name is None:
-        dataset_name = f"gymnasium-recorder/{env_id_underscored}/human-v0"
+        dataset_name = f"gymrec/{env_id_underscored}/human-v0"
 
     # Delete existing dataset with same name if present
     try:
@@ -1289,7 +1289,7 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
         dataset_id=dataset_name,
         buffer=buffers,
         algorithm_name="human",
-        description=f"Human gameplay of {env_id}, recorded with gymnasium-recorder",
+        description=f"Human gameplay of {env_id}, recorded with gymrec",
     )
     if author:
         create_kwargs["author"] = author
@@ -1371,7 +1371,7 @@ def generate_dataset_card(dataset, env_id, repo_id):
         f"# {env_id} Gameplay Dataset",
         "",
         f"Human gameplay recordings from the Gymnasium environment `{env_id}`,",
-        f"captured using [gymnasium-recorder](https://github.com/tsilva/gymnasium-recorder).",
+        f"captured using [gymrec](https://github.com/tsilva/gymrec).",
         "",
         "## Dataset Summary",
         "",
@@ -1408,7 +1408,7 @@ def generate_dataset_card(dataset, env_id, repo_id):
         "",
         "## About",
         "",
-        "Recorded with [gymnasium-recorder](https://github.com/tsilva/gymnasium-recorder).",
+        "Recorded with [gymrec](https://github.com/tsilva/gymrec).",
         f"Curated by: {curator}",
     ]
     card = DatasetCard("\n".join(content_lines))
@@ -1722,7 +1722,7 @@ async def main():
 
     parser_minari = subparsers.add_parser("minari-export", help="Export local dataset to Minari format")
     parser_minari.add_argument("env_id", type=str, nargs="?", default=None, help="Gymnasium environment id (e.g. BreakoutNoFrameskip-v4)")
-    parser_minari.add_argument("--name", type=str, default=None, help="Minari dataset name (default: gymnasium-recorder/<env_id>/human-v0)")
+    parser_minari.add_argument("--name", type=str, default=None, help="Minari dataset name (default: gymrec/<env_id>/human-v0)")
     parser_minari.add_argument("--author", type=str, default=None, help="Author name for dataset metadata")
     parser_minari.add_argument("--episode", type=str, default="all",
         help="Episode to export: 'all' (default), 'latest', or episode number (1-based)")

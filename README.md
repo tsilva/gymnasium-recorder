@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="logo.jpg" alt="gymnasium-recorder" width="256"/>
+  <img src="logo.png" alt="gymrec" width="512"/>
 
-  # gymnasium-recorder
+  # gymrec
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
@@ -14,20 +14,20 @@
 
 ---
 
-## Features
+## 🚀 Features
 
-- **Multi-platform support** - Works with Atari (ALE-py), Stable-Retro, and VizDoom environments
-- **Dataset-first design** - Captures frames and actions directly as Hugging Face datasets
-- **Automatic key bindings** - Platform-specific controls preconfigured for each environment type
-- **Playback verification** - Replay recordings to confirm environment determinism
-- **Hub integration** - Push datasets directly to Hugging Face Hub with auto-generated dataset cards
+- **🎯 Multi-platform support** — Works with Atari (ALE-py), Stable-Retro, and VizDoom environments
+- **💾 Dataset-first design** — Captures frames and actions directly as Hugging Face datasets
+- **🎮 Automatic key bindings** — Platform-specific controls preconfigured for each environment type
+- **🔄 Playback verification** — Replay recordings to confirm environment determinism
+- **☁️ Hub integration** — Push datasets directly to Hugging Face Hub with auto-generated dataset cards
 
-## Quick Start
+## ⚡ Quick Start
 
 ```bash
 # Clone the repository
-git clone https://github.com/tsilva/gymnasium-recorder.git
-cd gymnasium-recorder
+git clone https://github.com/tsilva/gymrec.git
+cd gymrec
 
 # Install dependencies
 uv sync
@@ -37,9 +37,9 @@ cp .env.example .env
 # Edit .env and add your HF_TOKEN
 ```
 
-## Usage
+## 📖 Usage
 
-### Record gameplay
+### 🎬 Record gameplay
 
 ```bash
 uv run python main.py record BreakoutNoFrameskip-v4
@@ -49,7 +49,7 @@ uv run python main.py record Airstriker-Genesis --fps 60
 
 Press **Space** to start recording. Use **ESC** to stop and exit.
 
-### Replay a dataset
+### 🔄 Replay a dataset
 
 ```bash
 uv run python main.py playback BreakoutNoFrameskip-v4
@@ -57,7 +57,7 @@ uv run python main.py playback BreakoutNoFrameskip-v4
 
 Replays the recorded actions from your Hugging Face Hub dataset.
 
-### List available environments
+### 📋 List available environments
 
 ```bash
 uv run python main.py list_environments
@@ -65,34 +65,34 @@ uv run python main.py list_environments
 
 Shows all available Atari, Stable-Retro, and VizDoom environments.
 
-## Supported Environments
+## 🎯 Supported Environments
 
 | Platform | Examples | Default FPS |
 |----------|----------|-------------|
-| Atari (ALE-py) | `BreakoutNoFrameskip-v4`, `PongNoFrameskip-v4` | 15 |
-| VizDoom | `VizdoomBasic-v0`, `VizdoomCorridor-v0` | 35 |
-| Stable-Retro | `Airstriker-Genesis`, `SuperMarioBros-Nes` | 60 |
+| 🕹️ Atari (ALE-py) | `BreakoutNoFrameskip-v4`, `PongNoFrameskip-v4` | 15 |
+| 🔫 VizDoom | `VizdoomBasic-v0`, `VizdoomCorridor-v0` | 35 |
+| 🎲 Stable-Retro | `Airstriker-Genesis`, `SuperMarioBros-Nes` | 60 |
 
-### Controls
+### 🎮 Controls
 
 | Platform | Controls |
 |----------|----------|
-| Atari | Arrow keys for movement |
-| VizDoom | Arrows (move/turn), Ctrl (attack), Space (use), 1-7 (weapons) |
-| Stable-Retro | Arrows, Z/X (A/B buttons), Tab/Enter (Select/Start) |
+| 🕹️ Atari | Arrow keys for movement |
+| 🔫 VizDoom | Arrows (move/turn), Ctrl (attack), Space (use), 1-7 (weapons) |
+| 🎲 Stable-Retro | Arrows, Z/X (A/B buttons), Tab/Enter (Select/Start) |
 
-## Requirements
+## 📋 Requirements
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) (for dependency management)
-- Hugging Face account and token (for dataset uploads)
+- 🐍 Python 3.12+
+- ⚡ [uv](https://docs.astral.sh/uv/getting-started/installation/) (for dependency management)
+- 🤗 Hugging Face account and token (for dataset uploads)
 
-### macOS Apple Silicon Note
+### 🍎 macOS Apple Silicon Note
 
-The `stable-retro` package on PyPI ships a broken wheel for Apple Silicon (x86_64 binary mislabeled as arm64). This repo includes a pre-built native ARM64 wheel in `wheels/` that is installed automatically by `uv sync` - no extra steps needed.
+The `stable-retro` package on PyPI ships a broken wheel for Apple Silicon (x86_64 binary mislabeled as arm64). This repo includes a pre-built native ARM64 wheel in `wheels/` that is installed automatically by `uv sync` — no extra steps needed.
 
 <details>
-<summary>Rebuilding the wheel from source (only needed for new Python versions or stable-retro updates)</summary>
+<summary>🔧 Rebuilding the wheel from source (only needed for new Python versions or stable-retro updates)</summary>
 
 ```bash
 # 1. Clone with all submodules
@@ -117,7 +117,7 @@ cmake . -G "Unix Makefiles" \
 make -j8 stable_retro
 
 # 5. Create wheel
-pip wheel . --no-build-isolation -w /path/to/gymnasium-recorder/wheels/
+pip wheel . --no-build-isolation -w /path/to/gymrec/wheels/
 
 # 6. Update pyproject.toml [tool.uv.sources] with the new wheel filename
 ```
@@ -128,17 +128,17 @@ pip wheel . --no-build-isolation -w /path/to/gymnasium-recorder/wheels/
 
 </details>
 
-## How It Works
+## 🔧 How It Works
 
-1. **Recording**: The `DatasetRecorderWrapper` captures each frame as a JPEG and logs the corresponding action
-2. **Storage**: Frames and actions are assembled into a Hugging Face Dataset with columns: `episode_id`, `timestamp`, `image`, `step`, `action`
-3. **Upload**: Datasets are pushed to Hub with naming convention `{username}/GymnasiumRecording__{env_id}`
-4. **Playback**: Recorded actions are fed back to the environment to verify deterministic replay
+1. **🎬 Recording** — The `DatasetRecorderWrapper` captures each frame as a JPEG and logs the corresponding action
+2. **💾 Storage** — Frames and actions are assembled into a Hugging Face Dataset with columns: `episode_id`, `timestamp`, `image`, `step`, `action`
+3. **☁️ Upload** — Datasets are pushed to Hub with naming convention `{username}/GymnasiumRecording__{env_id}`
+4. **🔄 Playback** — Recorded actions are fed back to the environment to verify deterministic replay
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
-## License
+## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).

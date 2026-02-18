@@ -1,4 +1,4 @@
-# Configuration for gymnasium-recorder
+# Configuration for gymrec
 # Uncomment and modify values to customize. All values shown are defaults.
 
 [display]
@@ -10,13 +10,13 @@
 # retro = 90
 
 [dataset]
-# repo_prefix = "gymnasium-recorder__"
+# repo_prefix = "gymrec__"
 # license = "mit"
 # task_categories = ["reinforcement-learning"]
 # commit_message = "Update dataset card"
 
 [storage]
-# local_dir = "~/.gymnasium-recorder/datasets"
+# local_dir = "~/.gymrec/datasets"
 
 [overlay]
 # font_size = 48
