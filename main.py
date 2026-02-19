@@ -369,7 +369,7 @@ def _lazy_init():
     global CONFIG
     global np, pygame, PILImage
     global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
-    global Dataset, HFImage, load_dataset, load_from_disk, load_dataset_builder
+    global Dataset, HFImage, Value, load_dataset, load_from_disk, load_dataset_builder
     global \
         START_KEY, \
         ATARI_KEY_BINDINGS, \
@@ -390,6 +390,7 @@ def _lazy_init():
     from datasets import (
         Dataset,
         Image as HFImage,
+        Value,
         load_dataset,
         load_from_disk,
         load_dataset_builder,
@@ -784,6 +785,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.truncations = []
         self.infos = []
         self._current_episode_uuid = None
+        self._current_episode_seed = None
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -850,7 +852,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         path = self._save_frame_image(frame)
         self.episode_ids.append(episode_uuid.bytes)
-        self.seeds.append(seed if step == 0 else None)
+        self.seeds.append(self._current_episode_seed)
         self.frames.append(path)
         self.actions.append(self._normalize_action(action))
 
@@ -866,7 +868,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
         path = self._save_frame_image(frame)
         self.episode_ids.append(episode_uuid.bytes)
-        self.seeds.append(None)
+        self.seeds.append(self._current_episode_seed)
         self.frames.append(path)
         self.actions.append([])
         self.rewards.append(None)
@@ -1366,7 +1368,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._env_metadata = _capture_env_metadata(self.env)
 
         self._current_episode_uuid = uuid.uuid4()
-        seed = int(time.time())
+        self._current_episode_seed = int(time.time())
+        seed = self._current_episode_seed
         self._episode_count = 1
         self._cumulative_reward = 0.0
         obs, _ = self.env.reset(seed=seed)
@@ -1435,7 +1438,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
                     break
 
                 self._current_episode_uuid = uuid.uuid4()
-                seed = int(time.time())
+                self._current_episode_seed = int(time.time())
+                seed = self._current_episode_seed
                 obs, _ = self.env.reset(seed=seed)
                 self._episode_count += 1
                 self._cumulative_reward = 0.0
@@ -1466,9 +1470,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
             self._recorded_dataset = self._recorded_dataset.cast_column(
                 "observations", HFImage()
             )
-            # Cast episode_id to binary(16) for efficient UUID storage
+            # Cast episode_id to binary for efficient UUID storage
             self._recorded_dataset = self._recorded_dataset.cast_column(
-                "episode_id", pa.binary(16)
+                "episode_id", Value("binary")
             )
 
     def _extract_obs_image(self, obs):
