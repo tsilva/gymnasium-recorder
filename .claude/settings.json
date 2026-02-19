@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "huggingface-skills@claude-plugins-official": true
+  }
+}
