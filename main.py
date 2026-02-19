@@ -2162,6 +2162,88 @@ def list_environments():
     _list_environments__vizdoom()
 
 
+def _import_roms(path: str):
+    """Import ROMs into stable-retro from a directory or file."""
+    import io
+    import zipfile
+    import stable_retro.data
+
+    if not os.path.exists(path):
+        console.print(f"[{STYLE_FAIL}]Error: Path not found: {path}[/]")
+        return
+
+    known_hashes = stable_retro.data.get_known_hashes()
+    imported_games = 0
+
+    def save_if_matches(filename, f):
+        nonlocal imported_games
+        try:
+            data, hash = stable_retro.data.groom_rom(filename, f)
+        except (OSError, ValueError):
+            return
+        if hash in known_hashes:
+            game, ext, curpath = known_hashes[hash]
+            game_path = os.path.join(curpath, game)
+            rom_path = os.path.join(game_path, "rom%s" % ext)
+            with open(rom_path, "wb") as f:
+                f.write(data)
+
+            metadata_path = os.path.join(game_path, "metadata.json")
+            if os.path.exists(metadata_path):
+                try:
+                    with open(metadata_path) as mf:
+                        metadata = json.load(mf)
+                    original_name = metadata.get("original_rom_name")
+                    if original_name:
+                        with open(os.path.join(game_path, original_name), "wb") as of:
+                            of.write(data)
+                except (json.JSONDecodeError, OSError):
+                    pass
+            imported_games += 1
+
+    def check_zipfile(f, process_f):
+        with zipfile.ZipFile(f) as zf:
+            for entry in zf.infolist():
+                _root, ext = os.path.splitext(entry.filename)
+                with zf.open(entry) as innerf:
+                    if ext == ".zip":
+                        check_zipfile(innerf, process_f)
+                    else:
+                        process_f(entry.filename, innerf)
+
+    if os.path.isfile(path):
+        # Single file
+        with open(path, "rb") as f:
+            _root, ext = os.path.splitext(path)
+            if ext == ".zip":
+                save_if_matches(os.path.basename(path), f)
+                f.seek(0)
+                try:
+                    check_zipfile(f, save_if_matches)
+                except zipfile.BadZipFile:
+                    pass
+            else:
+                save_if_matches(os.path.basename(path), f)
+    else:
+        # Directory - walk recursively
+        for root, dirs, files in os.walk(path):
+            for filename in files:
+                filepath = os.path.join(root, filename)
+                with open(filepath, "rb") as f:
+                    _root, ext = os.path.splitext(filename)
+                    if ext == ".zip":
+                        save_if_matches(filename, f)
+                        f.seek(0)
+                        try:
+                            check_zipfile(f, save_if_matches)
+                        except zipfile.BadZipFile:
+                            pass
+                    else:
+                        save_if_matches(filename, f)
+
+    console.print(f"[{STYLE_SUCCESS}]Imported {imported_games} ROM(s)[/]")
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Gymnasium Recorder/Playback")
     subparsers = parser.add_subparsers(dest="command")
@@ -2228,6 +2310,15 @@ async def main():
     subparsers.add_parser("login", help="Log in to Hugging Face Hub")
     subparsers.add_parser("list_environments", help="List available environments")
 
+    parser_import = subparsers.add_parser(
+        "import_roms", help="Import ROMs into stable-retro from a directory or file"
+    )
+    parser_import.add_argument(
+        "path",
+        type=str,
+        help="Path to directory or file containing ROMs",
+    )
+
     parser_minari = subparsers.add_parser(
         "minari-export", help="Export local dataset to Minari format"
     )
@@ -2273,6 +2364,10 @@ async def main():
 
     if args.command == "list_environments":
         list_environments()
+        return
+
+    if args.command == "import_roms":
+        _import_roms(args.path)
         return
 
     env_id = args.env_id
