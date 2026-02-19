@@ -1441,39 +1441,6 @@ def load_local_dataset(env_id):
     return load_from_disk(path)
 
 
-def filter_dataset_by_episode(dataset, episode_arg):
-    """Filter dataset by episode selection. Returns (filtered_dataset, episode_label)."""
-    episode_ids = sorted(set(dataset["episode_id"]))
-    if len(episode_ids) <= 1:
-        return dataset, None
-
-    if episode_arg == "all":
-        return dataset, f"all {len(episode_ids)} episodes"
-
-    if episode_arg == "latest":
-        target = episode_ids[-1]
-        idx = len(episode_ids)
-    else:
-        try:
-            n = int(episode_arg)
-            if n < 1 or n > len(episode_ids):
-                console.print(
-                    f"[yellow]Episode {n} out of range (1-{len(episode_ids)}). Using latest.[/]"
-                )
-                target = episode_ids[-1]
-                idx = len(episode_ids)
-            else:
-                target = episode_ids[n - 1]
-                idx = n
-        except ValueError:
-            console.print(f"[yellow]Invalid episode '{episode_arg}'. Using latest.[/]")
-            target = episode_ids[-1]
-            idx = len(episode_ids)
-
-    filtered = dataset.filter(lambda row: row["episode_id"] == target)
-    return filtered, f"episode {idx}/{len(episode_ids)}"
-
-
 def upload_local_dataset(env_id):
     """Load local dataset and push to Hugging Face Hub."""
     if not ensure_hf_login():
@@ -1501,7 +1468,7 @@ def upload_local_dataset(env_id):
         return False
 
 
-def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
+def minari_export(env_id, dataset_name=None, author=None):
     """Export a local HF dataset to Minari format for offline RL."""
     try:
         import minari
@@ -1518,11 +1485,6 @@ def minari_export(env_id, dataset_name=None, author=None, episode_arg="all"):
             f"  Expected at: [{STYLE_PATH}]{get_local_dataset_path(env_id)}[/]"
         )
         return False
-
-    if episode_arg != "all":
-        dataset, ep_label = filter_dataset_by_episode(dataset, episode_arg)
-        if ep_label:
-            console.print(f"[{STYLE_INFO}]Exporting {ep_label}[/]")
 
     # Group rows by episode
     episodes = {}
@@ -2284,12 +2246,6 @@ async def main():
         "--scale", type=int, default=None, help="Display scale factor (default: 2)"
     )
     parser_playback.add_argument(
-        "--episode",
-        type=str,
-        default="latest",
-        help="Episode to play: 'latest' (default), 'all', or episode number (1-based)",
-    )
-    parser_playback.add_argument(
         "--verify",
         action="store_true",
         default=False,
@@ -2338,12 +2294,6 @@ async def main():
     parser_minari.add_argument(
         "--author", type=str, default=None, help="Author name for dataset metadata"
     )
-    parser_minari.add_argument(
-        "--episode",
-        type=str,
-        default="all",
-        help="Episode to export: 'all' (default), 'latest', or episode number (1-based)",
-    )
 
     args = parser.parse_args()
     if args.command is None:
@@ -2384,9 +2334,7 @@ async def main():
         return
 
     if args.command == "minari-export":
-        minari_export(
-            env_id, dataset_name=args.name, author=args.author, episode_arg=args.episode
-        )
+        minari_export(env_id, dataset_name=args.name, author=args.author)
         return
 
     if hasattr(args, "scale") and args.scale is not None:
@@ -2428,13 +2376,9 @@ async def main():
     elif args.command == "playback":
         loaded_dataset = load_local_dataset(env_id)
         if loaded_dataset is not None:
-            loaded_dataset, ep_label = filter_dataset_by_episode(
-                loaded_dataset, args.episode
+            console.print(
+                f"[{STYLE_INFO}]Playing back from local dataset ({len(loaded_dataset)} frames)[/]"
             )
-            info = f"{len(loaded_dataset)} frames"
-            if ep_label:
-                info += f", {ep_label}"
-            console.print(f"[{STYLE_INFO}]Playing back from local dataset ({info})[/]")
             total = len(loaded_dataset)
         else:
             console.print("[dim]No local dataset found, trying Hugging Face Hub...[/]")
@@ -2462,6 +2406,9 @@ async def main():
                     total = None
             except Exception:
                 total = None
+            console.print(
+                f"[{STYLE_INFO}]Playing back streaming from Hugging Face Hub[/]"
+            )
         recorder = DatasetRecorderWrapper(env)
 
         def _is_step_row(row):
