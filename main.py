@@ -8,6 +8,7 @@ import asyncio
 import tempfile
 import argparse
 import tomllib
+import uuid
 
 from rich.console import Console
 from rich.table import Table
@@ -488,6 +489,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.terminations = []
         self.truncations = []
         self.infos = []
+        self._current_episode_uuid = None
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -546,18 +548,18 @@ class DatasetRecorderWrapper(gym.Wrapper):
         else:
             return [int(action)]
 
-    def _record_frame(self, episode_id, seed, step, frame, action):
+    def _record_frame(self, episode_uuid, seed, step, frame, action):
         """Save a frame and action to temporary storage."""
         if not self.recording:
             return
 
         path = self._save_frame_image(frame)
-        self.episode_ids.append(episode_id)
+        self.episode_ids.append(episode_uuid.bytes)
         self.seeds.append(seed if step == 0 else None)
         self.frames.append(path)
         self.actions.append(self._normalize_action(action))
 
-    def _record_terminal_observation(self, episode_id, frame):
+    def _record_terminal_observation(self, episode_uuid, frame):
         """Record a terminal observation row (Minari N+1 pattern).
 
         The N+1 observation captures the final state after the last step.
@@ -568,7 +570,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             return
 
         path = self._save_frame_image(frame)
-        self.episode_ids.append(episode_id)
+        self.episode_ids.append(episode_uuid.bytes)
         self.seeds.append(None)
         self.frames.append(path)
         self.actions.append([])
@@ -1056,7 +1058,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         # Capture environment metadata for dataset card
         self._env_metadata = _capture_env_metadata(self.env)
 
-        episode_id = 0
+        self._current_episode_uuid = uuid.uuid4()
         seed = int(time.time())
         self._episode_count = 1
         self._cumulative_reward = 0.0
@@ -1074,7 +1076,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
             if not self._input_loop():
                 break
             action = self._get_user_action()
-            self._record_frame(episode_id, seed, step, obs, action)
+            self._record_frame(self._current_episode_uuid, seed, step, obs, action)
             obs, reward, terminated, truncated, info = self.env.step(action)
             self._cumulative_reward += float(reward)
             if self.recording:
@@ -1092,8 +1094,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
             step += 1
 
             if terminated or truncated:
-                self._record_terminal_observation(episode_id, obs)
-                episode_id += 1
+                self._record_terminal_observation(self._current_episode_uuid, obs)
+                self._current_episode_uuid = uuid.uuid4()
                 seed = int(time.time())
                 obs, _ = self.env.reset(seed=seed)
                 self._episode_count += 1
@@ -1106,9 +1108,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
             # Mark last real step as truncated: user exited mid-episode.
             # Minari requires at least one True in terminations or truncations per episode.
             self.truncations[-1] = True
-            self._record_terminal_observation(episode_id, obs)
+            self._record_terminal_observation(self._current_episode_uuid, obs)
 
         if self.recording and self.frames:
+            import pyarrow as pa
+
             data = {
                 "episode_id": self.episode_ids,
                 "seed": self.seeds,
@@ -1440,14 +1444,8 @@ def save_dataset_locally(dataset, env_id, metadata=None):
     metadata_path = _get_metadata_path(env_id)
 
     if os.path.exists(path):
-        # Load existing dataset and find max episode_id
+        # Load existing dataset - UUIDs are already unique, no offsetting needed
         existing_dataset = load_from_disk(path)
-        max_episode_id = max(existing_dataset["episode_id"])
-
-        # Offset episode_ids in new dataset
-        new_episode_ids = [eid + max_episode_id + 1 for eid in dataset["episode_id"]]
-        dataset = dataset.remove_columns(["episode_id"])
-        dataset = dataset.add_column("episode_id", new_episode_ids)
 
         # Concatenate datasets
         from datasets import concatenate_datasets
@@ -1553,6 +1551,9 @@ def minari_export(env_id, dataset_name=None, author=None):
     episodes = {}
     for row in dataset:
         eid = row["episode_id"]
+        # Handle both UUID bytes and legacy integer episode IDs
+        if isinstance(eid, bytes):
+            eid = uuid.UUID(bytes=eid)
         if eid not in episodes:
             episodes[eid] = []
         episodes[eid].append(row)
@@ -1903,7 +1904,7 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
             "The terminal observation is the final state after the last step — it has an empty action",
             "and null values for rewards/terminations/truncations/infos.",
             "",
-            "- **episode_id** (`int`): Sequential episode identifier (0-based)",
+            "- **episode_id** (`binary(16)`): Unique UUID identifier for each episode (16 bytes, universally unique across all recordings)",
             "- **seed** (`int` or `null`): RNG seed used for `env.reset()` (set on first row of each episode, `null` on other rows)",
             "- **observations** (`Image`): RGB frame from the environment",
             "- **actions** (`list`): Action taken at this step (`[]` for terminal observations)",
