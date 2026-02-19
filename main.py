@@ -1423,10 +1423,27 @@ def _get_available_envs_from_hf():
 
 
 def save_dataset_locally(dataset, env_id):
-    """Save dataset to local disk, replacing any existing data."""
+    """Save dataset to local disk, appending to any existing data."""
     path = get_local_dataset_path(env_id)
+
     if os.path.exists(path):
+        # Load existing dataset and find max episode_id
+        existing_dataset = load_from_disk(path)
+        max_episode_id = max(existing_dataset["episode_id"])
+
+        # Offset episode_ids in new dataset
+        new_episode_ids = [eid + max_episode_id + 1 for eid in dataset["episode_id"]]
+        dataset = dataset.remove_columns(["episode_id"])
+        dataset = dataset.add_column("episode_id", new_episode_ids)
+
+        # Concatenate datasets
+        from datasets import concatenate_datasets
+
+        dataset = concatenate_datasets([existing_dataset, dataset])
+
+        # Remove old dataset directory
         shutil.rmtree(path)
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
     dataset.save_to_disk(path)
     console.print(f"Dataset saved locally ([{STYLE_PATH}]{path}[/])")
