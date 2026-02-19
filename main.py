@@ -497,6 +497,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._cumulative_reward = 0.0
         self._overlay_visible = True
         self._recorded_dataset = None
+        self._env_metadata = None
 
     def _ensure_screen(self, frame):
         """
@@ -1052,6 +1053,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.truncations.clear()
         self.infos.clear()
 
+        # Capture environment metadata for dataset card
+        self._env_metadata = _capture_env_metadata(self.env)
+
         episode_id = 0
         seed = int(time.time())
         self._episode_count = 1
@@ -1422,9 +1426,18 @@ def _get_available_envs_from_hf():
     return sorted(set(available))
 
 
-def save_dataset_locally(dataset, env_id):
+def _get_metadata_path(env_id):
+    """Return the path to the metadata JSON file for a given environment."""
+    encoded_env_id = _encode_env_id_for_hf(env_id)
+    return os.path.join(
+        CONFIG["storage"]["local_dir"], f"{encoded_env_id}_metadata.json"
+    )
+
+
+def save_dataset_locally(dataset, env_id, metadata=None):
     """Save dataset to local disk, appending to any existing data."""
     path = get_local_dataset_path(env_id)
+    metadata_path = _get_metadata_path(env_id)
 
     if os.path.exists(path):
         # Load existing dataset and find max episode_id
@@ -1446,8 +1459,39 @@ def save_dataset_locally(dataset, env_id):
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     dataset.save_to_disk(path)
+
+    # Save/update metadata
+    if metadata is not None:
+        existing_metadata = {}
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "r") as f:
+                existing_metadata = json.load(f)
+        # Update with new metadata (newer values take precedence)
+        existing_metadata.update(metadata)
+        # Add recording timestamp
+        if "recordings" not in existing_metadata:
+            existing_metadata["recordings"] = []
+        existing_metadata["recordings"].append(
+            {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "episodes": len(set(dataset["episode_id"])),
+                "frames": len(dataset),
+            }
+        )
+        with open(metadata_path, "w") as f:
+            json.dump(existing_metadata, f, indent=2, default=_json_default)
+
     console.print(f"Dataset saved locally ([{STYLE_PATH}]{path}[/])")
     return path
+
+
+def load_local_metadata(env_id):
+    """Load metadata from local disk. Returns None if not found."""
+    metadata_path = _get_metadata_path(env_id)
+    if not os.path.exists(metadata_path):
+        return None
+    with open(metadata_path, "r") as f:
+        return json.load(f)
 
 
 def load_local_dataset(env_id):
@@ -1472,7 +1516,9 @@ def upload_local_dataset(env_id):
     hf_repo_id = env_id_to_hf_repo_id(env_id)
     try:
         dataset.push_to_hub(hf_repo_id)
-        generate_dataset_card(dataset, env_id, hf_repo_id)
+        # Load metadata if available
+        metadata = load_local_metadata(env_id)
+        generate_dataset_card(dataset, env_id, hf_repo_id, metadata=metadata)
         console.print(
             f"[{STYLE_SUCCESS}]Dataset uploaded: https://huggingface.co/datasets/{hf_repo_id}[/]"
         )
@@ -1633,6 +1679,88 @@ def _detect_backend(env_id):
         return "atari"
 
 
+def _capture_env_metadata(env):
+    """Capture environment configuration metadata for dataset card."""
+    metadata = {
+        "env_id": getattr(env, "_env_id", "unknown"),
+        "backend": _detect_backend(getattr(env, "_env_id", "")),
+        "frameskip": get_frameskip(env),
+        "fps": get_default_fps(env),
+    }
+
+    # Action space info
+    action_space = env.action_space
+    if isinstance(action_space, gym.spaces.Discrete):
+        metadata["action_space_type"] = "Discrete"
+        metadata["n_actions"] = action_space.n
+    elif isinstance(action_space, gym.spaces.MultiBinary):
+        metadata["action_space_type"] = "MultiBinary"
+        metadata["n_actions"] = action_space.n
+    elif isinstance(action_space, gym.spaces.Dict):
+        metadata["action_space_type"] = "Dict"
+        for key, space in action_space.spaces.items():
+            if isinstance(space, gym.spaces.Discrete):
+                metadata[f"action_space_{key}"] = f"Discrete({space.n})"
+            elif isinstance(space, gym.spaces.MultiBinary):
+                metadata[f"action_space_{key}"] = f"MultiBinary({space.n})"
+            else:
+                metadata[f"action_space_{key}"] = str(space)
+    else:
+        metadata["action_space_type"] = type(action_space).__name__
+
+    # Observation space shape
+    obs_space = env.observation_space
+    if hasattr(obs_space, "shape"):
+        metadata["observation_shape"] = list(obs_space.shape)
+    if hasattr(obs_space, "dtype"):
+        metadata["observation_dtype"] = str(obs_space.dtype)
+
+    # Spec-based metadata
+    spec = getattr(env, "spec", None)
+    if spec is not None:
+        if hasattr(spec, "max_episode_steps") and spec.max_episode_steps is not None:
+            metadata["max_episode_steps"] = spec.max_episode_steps
+        kwargs = getattr(spec, "kwargs", {}) or {}
+        # Sticky actions (ALE)
+        if "repeat_action_probability" in kwargs:
+            metadata["sticky_actions"] = kwargs["repeat_action_probability"]
+
+    # ALE-specific: check unwrapped for sticky actions
+    unwrapped = getattr(env, "unwrapped", None)
+    if unwrapped is not None:
+        sticky = getattr(unwrapped, "_repeat_action_probability", None)
+        if sticky is not None:
+            metadata["sticky_actions"] = sticky
+
+    # Reward range
+    if hasattr(env, "reward_range"):
+        metadata["reward_range"] = list(env.reward_range)
+
+    # Stable-Retro specific
+    if hasattr(env, "_stable_retro") and env._stable_retro:
+        unwrapped = getattr(env, "unwrapped", None)
+        if unwrapped is not None:
+            metadata["retro_platform"] = getattr(unwrapped, "system", None)
+            metadata["retro_game"] = getattr(unwrapped, "gamerom", None)
+            buttons = getattr(unwrapped, "buttons", None)
+            if buttons:
+                metadata["retro_buttons"] = list(buttons)
+
+    # VizDoom specific
+    if hasattr(env, "_vizdoom") and env._vizdoom:
+        unwrapped = getattr(env, "unwrapped", None)
+        if unwrapped is not None:
+            metadata["vizdoom_scenario"] = getattr(unwrapped, "scenario", None)
+            metadata["vizdoom_num_binary_buttons"] = getattr(
+                unwrapped, "num_binary_buttons", None
+            )
+            metadata["vizdoom_num_delta_buttons"] = getattr(
+                unwrapped, "num_delta_buttons", None
+            )
+
+    return metadata
+
+
 def _size_category(n):
     """Return HF size_categories string for a frame count."""
     if n < 1000:
@@ -1653,7 +1781,7 @@ _BACKEND_LABELS = {
 }
 
 
-def generate_dataset_card(dataset, env_id, repo_id):
+def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
     """Generate or update the dataset card for a given dataset repo."""
 
     frames = len(dataset)
@@ -1692,35 +1820,111 @@ def generate_dataset_card(dataset, env_id, repo_id):
         f"| Environment | `{env_id}` |",
         f"| Backend | {_BACKEND_LABELS.get(backend, backend)} |",
         "",
-        "## Dataset Structure",
-        "",
-        "Minari-compatible flat table format. Use `minari-export` for native [Minari](https://minari.farama.org/) HDF5 format.",
-        "",
-        "Each episode has N step rows plus one terminal observation row (N+1 pattern).",
-        "The terminal observation is the final state after the last step — it has an empty action",
-        "and null values for rewards/terminations/truncations/infos.",
-        "",
-        "- **episode_id** (`int`): Sequential episode identifier (0-based)",
-        "- **seed** (`int` or `null`): RNG seed used for `env.reset()` (set on first row of each episode, `null` on other rows)",
-        "- **observations** (`Image`): RGB frame from the environment",
-        "- **actions** (`list`): Action taken at this step (`[]` for terminal observations)",
-        "- **rewards** (`float` or `null`): Reward received (`null` on terminal observation rows)",
-        "- **terminations** (`bool` or `null`): Whether the episode terminated naturally (`null` on terminal observation rows)",
-        "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
-        "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
-        "",
-        "## Usage",
-        "",
-        "```python",
-        "from datasets import load_dataset",
-        f'ds = load_dataset("{repo_id}")',
-        "```",
-        "",
-        "## About",
-        "",
-        "Recorded with [gymrec](https://github.com/tsilva/gymrec).",
-        f"Curated by: {curator}",
     ]
+
+    # Add Environment Configuration section if metadata is available
+    if metadata:
+        content_lines.extend(
+            [
+                "## Environment Configuration",
+                "",
+                "| Setting | Value |",
+                "|---------|-------|",
+            ]
+        )
+
+        # Core settings
+        if "frameskip" in metadata:
+            content_lines.append(f"| Frameskip | {metadata['frameskip']} |")
+        if "fps" in metadata:
+            content_lines.append(f"| Target FPS | {metadata['fps']} |")
+        if "sticky_actions" in metadata:
+            content_lines.append(f"| Sticky Actions | {metadata['sticky_actions']} |")
+        if "max_episode_steps" in metadata:
+            content_lines.append(
+                f"| Max Episode Steps | {metadata['max_episode_steps']} |"
+            )
+
+        # Observation space
+        if "observation_shape" in metadata:
+            shape = metadata["observation_shape"]
+            content_lines.append(
+                f"| Observation Shape | {' × '.join(str(s) for s in shape)} |"
+            )
+        if "observation_dtype" in metadata:
+            content_lines.append(
+                f"| Observation Dtype | {metadata['observation_dtype']} |"
+            )
+
+        # Action space
+        if "action_space_type" in metadata:
+            content_lines.append(f"| Action Space | {metadata['action_space_type']} |")
+        if "n_actions" in metadata:
+            content_lines.append(f"| Number of Actions | {metadata['n_actions']} |")
+
+        # Reward range
+        if "reward_range" in metadata:
+            rmin, rmax = metadata["reward_range"]
+            content_lines.append(f"| Reward Range | [{rmin}, {rmax}] |")
+
+        # Backend-specific info
+        if backend == "stable-retro":
+            if "retro_platform" in metadata and metadata["retro_platform"]:
+                content_lines.append(f"| Platform | {metadata['retro_platform']} |")
+            if "retro_game" in metadata and metadata["retro_game"]:
+                content_lines.append(f"| Game | {metadata['retro_game']} |")
+            if "retro_buttons" in metadata and metadata["retro_buttons"]:
+                buttons = ", ".join(metadata["retro_buttons"][:8])
+                if len(metadata["retro_buttons"]) > 8:
+                    buttons += f" (+{len(metadata['retro_buttons']) - 8} more)"
+                content_lines.append(f"| Buttons | {buttons} |")
+
+        elif backend == "vizdoom":
+            if "vizdoom_scenario" in metadata and metadata["vizdoom_scenario"]:
+                content_lines.append(f"| Scenario | {metadata['vizdoom_scenario']} |")
+            if "vizdoom_num_binary_buttons" in metadata:
+                content_lines.append(
+                    f"| Binary Buttons | {metadata['vizdoom_num_binary_buttons']} |"
+                )
+            if "vizdoom_num_delta_buttons" in metadata:
+                content_lines.append(
+                    f"| Delta Buttons | {metadata['vizdoom_num_delta_buttons']} |"
+                )
+
+        content_lines.append("")
+
+    content_lines.extend(
+        [
+            "## Dataset Structure",
+            "",
+            "Minari-compatible flat table format. Use `minari-export` for native [Minari](https://minari.farama.org/) HDF5 format.",
+            "",
+            "Each episode has N step rows plus one terminal observation row (N+1 pattern).",
+            "The terminal observation is the final state after the last step — it has an empty action",
+            "and null values for rewards/terminations/truncations/infos.",
+            "",
+            "- **episode_id** (`int`): Sequential episode identifier (0-based)",
+            "- **seed** (`int` or `null`): RNG seed used for `env.reset()` (set on first row of each episode, `null` on other rows)",
+            "- **observations** (`Image`): RGB frame from the environment",
+            "- **actions** (`list`): Action taken at this step (`[]` for terminal observations)",
+            "- **rewards** (`float` or `null`): Reward received (`null` on terminal observation rows)",
+            "- **terminations** (`bool` or `null`): Whether the episode terminated naturally (`null` on terminal observation rows)",
+            "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
+            "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
+            "",
+            "## Usage",
+            "",
+            "```python",
+            "from datasets import load_dataset",
+            f'ds = load_dataset("{repo_id}")',
+            "```",
+            "",
+            "## About",
+            "",
+            "Recorded with [gymrec](https://github.com/tsilva/gymrec).",
+            f"Curated by: {curator}",
+        ]
+    )
     card = DatasetCard("\n".join(content_lines))
 
     card.push_to_hub(
@@ -2368,7 +2572,7 @@ async def main():
             recorder.close()
             return
 
-        save_dataset_locally(recorded_dataset, env_id)
+        save_dataset_locally(recorded_dataset, env_id, metadata=recorder._env_metadata)
         recorder.close()  # cleanup temp files after dataset is saved
         console.print(
             f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]"
