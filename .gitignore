@@ -29,7 +29,6 @@ logs/
 # >>> END MANAGED <<<
 
 # Project-specific rules
-!wheels/stable_retro-*.whl
 *$py.class
 *-credentials.json
 *.code-workspace
@@ -122,6 +121,7 @@ target/
 var/
 venv.bak/
 wheels/*
+!wheels/stable_retro-*.whl
 yarn-debug.log*
 yarn-error.log*
 
