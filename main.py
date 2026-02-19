@@ -1844,33 +1844,163 @@ def load_local_dataset(env_id):
     return load_from_disk(path)
 
 
-def upload_local_dataset(env_id):
-    """Load local dataset and push to Hugging Face Hub."""
+def _merge_datasets(local_dataset, remote_dataset):
+    """Merge two datasets, deduplicating by episode_id."""
+    from datasets import concatenate_datasets
+
+    # Get existing episode IDs from remote
+    remote_episode_ids = set()
+    for row in remote_dataset:
+        eid = row["episode_id"]
+        if isinstance(eid, bytes):
+            eid = uuid.UUID(bytes=eid)
+        remote_episode_ids.add(eid)
+
+    # Filter local dataset to only new episodes
+    local_episode_ids = []
+    for row in local_dataset:
+        eid = row["episode_id"]
+        if isinstance(eid, bytes):
+            eid = uuid.UUID(bytes=eid)
+        local_episode_ids.append(eid)
+
+    # Find indices of new episodes in local dataset
+    new_indices = [
+        i for i, eid in enumerate(local_episode_ids) if eid not in remote_episode_ids
+    ]
+
+    if not new_indices:
+        console.print(
+            f"[{STYLE_INFO}]All episodes already exist on remote, nothing to upload[/]"
+        )
+        return remote_dataset
+
+    # Select only new rows from local dataset
+    new_local = local_dataset.select(new_indices)
+
+    # Concatenate remote + new local data
+    merged = concatenate_datasets([remote_dataset, new_local])
+    return merged
+
+
+def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
+    """Load local dataset and push to Hugging Face Hub with optimistic locking.
+
+    Uses optimistic locking with retry to handle concurrent uploads from multiple clients.
+    Downloads the remote dataset, merges with local data (deduplicating by episode_id),
+    and pushes atomically using parent_commit.
+
+    Args:
+        env_id: The environment ID to upload
+        max_retries: Maximum number of retry attempts on conflict (default: 5)
+        base_wait: Base wait time between retries in seconds (default: 1.0)
+    """
     if not ensure_hf_login():
         return False
-    dataset = load_local_dataset(env_id)
-    if dataset is None:
+
+    local_dataset = load_local_dataset(env_id)
+    if local_dataset is None:
         console.print(f"[{STYLE_FAIL}]No local dataset found for {env_id}[/]")
         console.print(
             f"  Expected at: [{STYLE_PATH}]{get_local_dataset_path(env_id)}[/]"
         )
         return False
+
     hf_repo_id = env_id_to_hf_repo_id(env_id)
-    try:
-        dataset.push_to_hub(hf_repo_id)
-        # Load metadata if available
-        metadata = load_local_metadata(env_id)
-        generate_dataset_card(dataset, env_id, hf_repo_id, metadata=metadata)
-        console.print(
-            f"[{STYLE_SUCCESS}]Dataset uploaded: https://huggingface.co/datasets/{hf_repo_id}[/]"
-        )
-        return True
-    except Exception as e:
-        console.print(f"[{STYLE_FAIL}]Upload failed: {e}[/]")
-        console.print(
-            f"To retry: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
-        )
-        return False
+    api = HfApi()
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Get current repo info to check if it exists and get latest commit
+            try:
+                repo_info = api.repo_info(repo_id=hf_repo_id, repo_type="dataset")
+                parent_commit = repo_info.sha if repo_info else None
+            except Exception:
+                # Repo doesn't exist yet, will be created
+                parent_commit = None
+
+            if parent_commit:
+                # Download remote dataset
+                console.print(
+                    f"[{STYLE_INFO}]Downloading remote dataset (attempt {attempt}/{max_retries})...[/]"
+                )
+                try:
+                    remote_dataset = load_dataset(
+                        hf_repo_id, split="train", revision=parent_commit
+                    )
+                    # Merge datasets, keeping only new episodes
+                    dataset_to_upload = _merge_datasets(local_dataset, remote_dataset)
+                    n_new_episodes = len(set(local_dataset["episode_id"])) - len(
+                        set(remote_dataset["episode_id"])
+                    )
+                    if n_new_episodes > 0:
+                        console.print(
+                            f"[{STYLE_INFO}]Adding {n_new_episodes} new episodes to remote dataset[/]"
+                        )
+                except Exception as e:
+                    console.print(
+                        f"[{STYLE_FAIL}]Failed to download remote dataset: {e}[/]"
+                    )
+                    return False
+            else:
+                # No remote dataset exists, upload local as-is
+                dataset_to_upload = local_dataset
+                console.print(
+                    f"[{STYLE_INFO}]Creating new dataset on Hugging Face Hub...[/]"
+                )
+
+            # Push with parent_commit for atomicity
+            console.print(f"[{STYLE_INFO}]Uploading to Hugging Face Hub...[/]")
+            dataset_to_upload.push_to_hub(
+                hf_repo_id,
+                commit_message=f"Add recordings from {env_id}",
+                revision=parent_commit if parent_commit else None,
+            )
+
+            # Generate/update dataset card
+            metadata = load_local_metadata(env_id)
+            generate_dataset_card(
+                dataset_to_upload, env_id, hf_repo_id, metadata=metadata
+            )
+
+            console.print(
+                f"[{STYLE_SUCCESS}]Dataset uploaded: https://huggingface.co/datasets/{hf_repo_id}[/]"
+            )
+            return True
+
+        except Exception as e:
+            error_msg = str(e)
+
+            # Check if this is a conflict error (parent_commit is outdated)
+            if (
+                "parent_commit" in error_msg.lower()
+                or "conflict" in error_msg.lower()
+                or "outdated" in error_msg.lower()
+            ):
+                if attempt < max_retries:
+                    wait_time = base_wait * (2 ** (attempt - 1))  # Exponential backoff
+                    console.print(
+                        f"[{STYLE_INFO}]Conflict detected, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})...[/]"
+                    )
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    console.print(
+                        f"[{STYLE_FAIL}]Max retries ({max_retries}) exceeded. Concurrent modifications detected.[/]"
+                    )
+                    console.print(
+                        f"[{STYLE_INFO}]Another client may be uploading simultaneously. Please try again later.[/]"
+                    )
+                    return False
+            else:
+                # Non-conflict error, fail immediately
+                console.print(f"[{STYLE_FAIL}]Upload failed: {e}[/]")
+                console.print(
+                    f"To retry: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
+                )
+                return False
+
+    return False
 
 
 def minari_export(env_id, dataset_name=None, author=None):
