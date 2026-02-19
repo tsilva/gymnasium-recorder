@@ -1306,20 +1306,113 @@ class DatasetRecorderWrapper(gym.Wrapper):
         super().close()
 
 
+def _encode_env_id_for_hf(env_id):
+    """
+    Encode env_id to a reversible string for HF dataset naming.
+
+    Encoding scheme:
+    - '/' -> '_slash_'
+    - '-' -> '_dash_'
+    - '_' -> '_underscore_'
+
+    This allows perfect round-trip conversion between env_id and HF dataset name.
+    """
+    encoded = env_id.replace("_", "_underscore_")
+    encoded = encoded.replace("-", "_dash_")
+    encoded = encoded.replace("/", "_slash_")
+    return encoded
+
+
+def _decode_hf_repo_name(repo_name):
+    """
+    Decode HF dataset name back to original env_id.
+
+    Reverse of _encode_env_id_for_hf().
+    """
+    # Must decode in reverse order to handle overlapping patterns correctly
+    decoded = repo_name.replace("_slash_", "/")
+    decoded = decoded.replace("_dash_", "-")
+    decoded = decoded.replace("_underscore_", "_")
+    return decoded
+
+
 def env_id_to_hf_repo_id(env_id):
     user_info = whoami()
     username = (
         user_info.get("name") or user_info.get("user") or user_info.get("username")
     )
-    env_id_underscored = env_id.replace("-", "_").replace("/", "_")
-    hf_repo_id = f"{username}/{CONFIG['dataset']['repo_prefix']}{env_id_underscored}"
+    encoded_env_id = _encode_env_id_for_hf(env_id)
+    hf_repo_id = f"{username}/{CONFIG['dataset']['repo_prefix']}{encoded_env_id}"
     return hf_repo_id
+
+
+def hf_repo_id_to_env_id(hf_repo_id):
+    """Convert HF repo_id back to original env_id."""
+    prefix = CONFIG["dataset"]["repo_prefix"]
+    # Extract just the repo name part (after username/)
+    if "/" in hf_repo_id:
+        repo_name = hf_repo_id.split("/", 1)[1]
+    else:
+        repo_name = hf_repo_id
+
+    if not repo_name.startswith(prefix):
+        return None
+
+    encoded_env_id = repo_name[len(prefix) :]
+    return _decode_hf_repo_name(encoded_env_id)
 
 
 def get_local_dataset_path(env_id):
     """Return the local storage path for a given environment's dataset."""
-    env_id_underscored = env_id.replace("-", "_").replace("/", "_")
-    return os.path.join(CONFIG["storage"]["local_dir"], env_id_underscored)
+    encoded_env_id = _encode_env_id_for_hf(env_id)
+    return os.path.join(CONFIG["storage"]["local_dir"], encoded_env_id)
+
+
+def _get_available_envs_from_local():
+    """Get list of env_ids that have local recordings."""
+    local_dir = CONFIG["storage"]["local_dir"]
+    if not os.path.exists(local_dir):
+        return []
+
+    available = []
+    prefix = CONFIG["dataset"]["repo_prefix"]
+    for entry in os.listdir(local_dir):
+        entry_path = os.path.join(local_dir, entry)
+        if os.path.isdir(entry_path):
+            # Check if this is a valid dataset directory
+            if os.path.exists(os.path.join(entry_path, "dataset_info.json")):
+                # Decode the directory name back to env_id
+                env_id = _decode_hf_repo_name(entry)
+                available.append(env_id)
+    return sorted(set(available))
+
+
+def _get_available_envs_from_hf():
+    """Get list of env_ids that have HF Hub recordings."""
+    try:
+        user_info = whoami()
+        username = (
+            user_info.get("name") or user_info.get("user") or user_info.get("username")
+        )
+    except Exception:
+        return []
+
+    prefix = CONFIG["dataset"]["repo_prefix"]
+    available = []
+
+    try:
+        api = HfApi()
+        # List all datasets for this user
+        datasets = api.list_datasets(author=username)
+        for ds in datasets:
+            if ds.id and ds.id.startswith(f"{username}/{prefix}"):
+                env_id = hf_repo_id_to_env_id(ds.id)
+                if env_id:
+                    available.append(env_id)
+    except Exception:
+        pass
+
+    return sorted(set(available))
 
 
 def save_dataset_locally(dataset, env_id):
@@ -1846,43 +1939,122 @@ def _get_vizdoom_envs() -> list[str]:
         return []
 
 
-def select_environment_interactive() -> str:
+def _get_env_platform(env_id: str) -> str:
+    """Determine the platform type for an env_id."""
+    retro_platforms = {
+        "Nes",
+        "GameBoy",
+        "Snes",
+        "GbAdvance",
+        "GbColor",
+        "Genesis",
+        "PCEngine",
+        "Saturn",
+        "32x",
+        "Sms",
+        "GameGear",
+        "SCD",
+        "Atari2600",
+    }
+
+    if env_id.startswith("ALE/"):
+        return "Atari"
+    elif env_id.startswith("Vizdoom") or env_id.startswith("vizdoom"):
+        return "VizDoom"
+    elif any(env_id.endswith(f"-{plat}") for plat in retro_platforms):
+        return "Stable-Retro"
+    else:
+        return "Atari"  # Default fallback
+
+
+def select_environment_interactive(available_recordings_only: bool = False) -> str:
     from simple_term_menu import TerminalMenu
 
-    atari_envs = _get_atari_envs()
-    retro_envs = _get_stableretro_envs(imported_only=True)
-    vizdoom_envs = _get_vizdoom_envs()
+    if available_recordings_only:
+        # Get envs with available recordings
+        local_envs = _get_available_envs_from_local()
+        hf_envs = _get_available_envs_from_hf()
+        all_recorded_envs = sorted(set(local_envs + hf_envs))
 
-    entries = []
-    env_id_map = []
+        if not all_recorded_envs:
+            console.print(
+                f"[{STYLE_FAIL}]No recordings found.[/]\n"
+                f"  Local path: [{STYLE_PATH}]{CONFIG['storage']['local_dir']}[/]\n"
+                f"  Record first: [{STYLE_CMD}]uv run python main.py record <env_id>[/]"
+            )
+            raise SystemExit(1)
 
-    for env_id in atari_envs:
-        entries.append(f"[Atari]  {env_id}")
-        env_id_map.append(env_id)
-    if atari_envs and (retro_envs or vizdoom_envs):
-        entries.append("")
-        env_id_map.append(None)
+        # Group by platform
+        atari_envs = [e for e in all_recorded_envs if _get_env_platform(e) == "Atari"]
+        retro_envs = [
+            e for e in all_recorded_envs if _get_env_platform(e) == "Stable-Retro"
+        ]
+        vizdoom_envs = [
+            e for e in all_recorded_envs if _get_env_platform(e) == "VizDoom"
+        ]
 
-    for env_id in retro_envs:
-        entries.append(f"[Stable-Retro]  {env_id}")
-        env_id_map.append(env_id)
-    if retro_envs and vizdoom_envs:
-        entries.append("")
-        env_id_map.append(None)
+        entries = []
+        env_id_map = []
 
-    for env_id in vizdoom_envs:
-        entries.append(f"[VizDoom]  {env_id}")
-        env_id_map.append(env_id)
+        for env_id in atari_envs:
+            entries.append(f"[Atari]  {env_id}")
+            env_id_map.append(env_id)
+        if atari_envs and (retro_envs or vizdoom_envs):
+            entries.append("")
+            env_id_map.append(None)
 
-    if not entries:
-        console.print(
-            "[dim]No environments found. Install ale-py, stable-retro, or vizdoom.[/]"
-        )
-        raise SystemExit(1)
+        for env_id in retro_envs:
+            entries.append(f"[Stable-Retro]  {env_id}")
+            env_id_map.append(env_id)
+        if retro_envs and vizdoom_envs:
+            entries.append("")
+            env_id_map.append(None)
+
+        for env_id in vizdoom_envs:
+            entries.append(f"[VizDoom]  {env_id}")
+            env_id_map.append(env_id)
+
+        title = "  Select Recording\n"
+        status_bar = "  ↑↓ navigate · / search · Enter select · Esc cancel"
+    else:
+        # Original behavior: list all available environments
+        atari_envs = _get_atari_envs()
+        retro_envs = _get_stableretro_envs(imported_only=True)
+        vizdoom_envs = _get_vizdoom_envs()
+
+        entries = []
+        env_id_map = []
+
+        for env_id in atari_envs:
+            entries.append(f"[Atari]  {env_id}")
+            env_id_map.append(env_id)
+        if atari_envs and (retro_envs or vizdoom_envs):
+            entries.append("")
+            env_id_map.append(None)
+
+        for env_id in retro_envs:
+            entries.append(f"[Stable-Retro]  {env_id}")
+            env_id_map.append(env_id)
+        if retro_envs and vizdoom_envs:
+            entries.append("")
+            env_id_map.append(None)
+
+        for env_id in vizdoom_envs:
+            entries.append(f"[VizDoom]  {env_id}")
+            env_id_map.append(env_id)
+
+        if not entries:
+            console.print(
+                "[dim]No environments found. Install ale-py, stable-retro, or vizdoom.[/]"
+            )
+            raise SystemExit(1)
+
+        title = "  Select Environment\n"
+        status_bar = "  ↑↓ navigate · / search · Enter select · Esc cancel"
 
     menu = TerminalMenu(
         entries,
-        title="  Select Environment\n",
+        title=title,
         menu_cursor="  > ",
         menu_cursor_style=("fg_cyan", "bold"),
         menu_highlight_style=("bold", "fg_cyan"),
@@ -1891,7 +2063,7 @@ def select_environment_interactive() -> str:
         show_search_hint_text="  (type / to search)",
         search_key="/",
         skip_empty_entries=True,
-        status_bar="  ↑↓ navigate · / search · Enter select · Esc cancel",
+        status_bar=status_bar,
         status_bar_style=("fg_gray",),
     )
 
@@ -2098,7 +2270,9 @@ async def main():
 
     env_id = args.env_id
     if env_id is None:
-        env_id = select_environment_interactive()
+        # For playback, only show environments with available recordings
+        is_playback = args.command == "playback"
+        env_id = select_environment_interactive(available_recordings_only=is_playback)
 
     _lazy_init()
 
