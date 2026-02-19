@@ -1030,7 +1030,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
             await self._play(fps)  # bypass play() to avoid premature close()
             return self._recorded_dataset
         finally:
-            self.close()  # always cleanup pygame and temp files
+            # Don't delete temp_dir here - dataset.save_to_disk() needs the image files
+            # temp_dir cleanup happens in main() after save_dataset_locally()
+            pygame.quit()
+            self.env.close()
 
     async def _play(self, fps=None):
         """
@@ -1381,6 +1384,10 @@ def _get_available_envs_from_local():
         if os.path.isdir(entry_path):
             # Check if this is a valid dataset directory
             if os.path.exists(os.path.join(entry_path, "dataset_info.json")):
+                # Skip old-format directories that don't use the encoding scheme
+                # (directories created before encoding was implemented won't have _dash_ or _underscore_)
+                if "_dash_" not in entry and "_underscore_" not in entry:
+                    continue
                 # Decode the directory name back to env_id
                 env_id = _decode_hf_repo_name(entry)
                 available.append(env_id)
@@ -2269,12 +2276,13 @@ async def main():
         return
 
     env_id = args.env_id
+
+    _lazy_init()
+
     if env_id is None:
         # For playback, only show environments with available recordings
         is_playback = args.command == "playback"
         env_id = select_environment_interactive(available_recordings_only=is_playback)
-
-    _lazy_init()
 
     if args.command == "upload":
         upload_local_dataset(env_id)
