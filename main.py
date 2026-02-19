@@ -520,18 +520,16 @@ class DatasetRecorderWrapper(gym.Wrapper):
             )
 
     def _save_frame_image(self, frame):
-        """Save a frame as PNG and return the file path."""
+        """Save a frame as lossless WebP and return the file path."""
         if isinstance(frame, dict):
             for k in ["obs", "image", "screen"]:
                 if k in frame:
                     frame = frame[k]
                     break
         frame_uint8 = frame.astype(np.uint8)
-        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.png")
+        path = os.path.join(self.temp_dir, f"frame_{len(self.frames):05d}.webp")
         img = PILImage.fromarray(frame_uint8)
-        if img.getcolors(maxcolors=256) is not None:
-            img = img.convert("P")
-        img.save(path, format="PNG")
+        img.save(path, format="WEBP", lossless=True, method=6)
         return path
 
     @staticmethod
