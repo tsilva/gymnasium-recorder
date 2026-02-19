@@ -55,6 +55,15 @@ uv run python main.py record <env_id>
 uv run python main.py record BreakoutNoFrameskip-v4 --fps 30
 ```
 
+### Recording with agent (automated data collection)
+```bash
+# Random agent, headless, collect 100 episodes
+uv run python main.py record SuperMarioBros-Nes --agent random --headless --episodes 100
+
+# Random agent with display (for monitoring)
+uv run python main.py record SuperMarioBros-Nes --agent random --episodes 10
+```
+
 ### Replaying recorded datasets
 ```bash
 uv run python main.py playback <env_id>
@@ -69,14 +78,22 @@ uv run python main.py list_environments
 ## Architecture
 
 ### Single-File Design
-All code is in `main.py` (~880 lines). The project prioritizes simplicity over modularization.
+All code is in `main.py`. The project prioritizes simplicity over modularization.
 
 ### Key Components
 
-**DatasetRecorderWrapper** (main.py:210-591)
+**InputSource Abstraction** (main.py:459-749)
+- `InputSource`: Abstract base class for input sources
+- `HumanInputSource`: Keyboard input via pygame
+- `AgentInputSource`: Policy-based input for automated data collection
+- `BasePolicy` / `RandomPolicy`: Policy interface with random sampling implementation
+
+**DatasetRecorderWrapper** (main.py:751-)
 - Gymnasium wrapper that handles recording and playback
-- Manages pygame rendering (2x scaled display)
-- Records frames to temporary JPEG files, then converts to HF Dataset
+- Accepts `InputSource` for flexible input (human or agent)
+- Supports headless mode for fast automated data collection
+- Manages pygame rendering (2x scaled display, skipped in headless mode)
+- Records frames to temporary WebP files, then converts to HF Dataset
 - Handles three environment types with different action spaces:
   - Atari (ALE-py): Discrete actions
   - VizDoom: MultiBinary actions (or Dict with binary/continuous)
@@ -137,19 +154,48 @@ if isinstance(frame, dict):
             break
 ```
 
-### User Controls
+### User Controls (Human Mode)
 - Space: Start recording
 - ESC: Exit
 - Platform-specific game controls (arrow keys, Z/X buttons, etc.)
 
+### Agent Mode
+- `--agent {human,random}`: Choose input source (default: human)
+- `--headless`: Run without display (agent mode only, runs at max speed)
+- `--episodes N`: Collect N episodes then stop
+  - Human mode: defaults to unlimited (run until ESC)
+  - Agent mode: defaults to 1 episode
+
 ## Key Constraints
 
 - **No testing infrastructure**: The project has no tests. Changes must be manually verified.
-- **Single episode per recording session**: Each `record()` call creates one episode.
 - **Pygame dependency**: All rendering and input uses pygame. The screen is created lazily after first observation.
 - **Async design**: Main loop uses `asyncio` with `await asyncio.sleep()` for frame pacing.
 - **Environment variables**: Requires `HF_TOKEN` in `.env` for dataset uploads.
+- **Headless mode**: Only available with `--agent` flag (not human mode).
 - README.md must be kept up to date with any significant project changes using the readme-generator skill.
+
+## Creating Custom Policies
+
+To create a custom policy, subclass `BasePolicy`:
+
+```python
+class MyPolicy(BasePolicy):
+    def __call__(self, observation):
+        # observation is the RGB array from the environment
+        # Return an action compatible with the action space
+        return self.action_space.sample()  # or your logic here
+
+# Use it in the record command
+policy = MyPolicy(env.action_space)
+input_source = AgentInputSource(policy, headless=True)
+recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=True)
+```
+
+Policies receive the full observation (RGB array) and must return actions compatible with the environment's action space:
+- **Discrete**: Return an integer (0 to n-1)
+- **MultiBinary**: Return a numpy array of 0s and 1s
+- **Dict**: Return a dict with appropriate keys
 
 ## Current TODOs
 

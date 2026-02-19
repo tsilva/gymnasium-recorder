@@ -9,6 +9,7 @@ import tempfile
 import argparse
 import tomllib
 import uuid
+from abc import ABC, abstractmethod
 
 from rich.console import Console
 from rich.table import Table
@@ -457,21 +458,314 @@ def ensure_hf_login(force=False) -> bool:
     return False
 
 
+# =============================================================================
+# Input Sources and Policies
+# =============================================================================
+
+
+class InputSource(ABC):
+    """Abstract base class for input sources (human or agent)."""
+
+    @abstractmethod
+    def get_action(self, observation) -> any:
+        """Return action for the current observation."""
+        pass
+
+    @abstractmethod
+    def handle_events(self) -> bool:
+        """Process any pending events. Returns False to quit."""
+        pass
+
+
+class HumanInputSource(InputSource):
+    """Human input via pygame keyboard events."""
+
+    def __init__(self, env, key_lock, current_keys):
+        self.env = env
+        self.key_lock = key_lock
+        self.current_keys = current_keys
+        self.key_to_action = None
+        self._atari_key_bindings_raw = ATARI_KEY_BINDINGS
+        self._atari_meaning_to_idx = None
+        self._atari_key_to_meaning = {}
+        self._vizdoom_buttons = None
+        self._vizdoom_vector_map = None
+        self.noop_action = 0
+
+    def _resolve_atari_key_mapping(self):
+        """Resolve meaning-based Atari key bindings to action indices."""
+        standard_meaning_to_idx = {
+            "NOOP": 0,
+            "FIRE": 1,
+            "UP": 2,
+            "RIGHT": 3,
+            "LEFT": 4,
+            "DOWN": 5,
+            "UPRIGHT": 6,
+            "UPLEFT": 7,
+            "DOWNRIGHT": 8,
+            "DOWNLEFT": 9,
+            "UPFIRE": 10,
+            "RIGHTFIRE": 11,
+            "LEFTFIRE": 12,
+            "DOWNFIRE": 13,
+            "UPRIGHTFIRE": 14,
+            "UPLEFTFIRE": 15,
+            "DOWNRIGHTFIRE": 16,
+            "DOWNLEFTFIRE": 17,
+        }
+
+        meaning_to_idx = None
+        try:
+            meanings = self.env.unwrapped.get_action_meanings()
+            if meanings:
+                meaning_to_idx = {m.upper(): idx for idx, m in enumerate(meanings)}
+        except (AttributeError, TypeError):
+            pass
+
+        if meaning_to_idx is None:
+            meaning_to_idx = standard_meaning_to_idx
+
+        resolved = {}
+        for key, value in self._atari_key_bindings_raw.items():
+            if isinstance(value, str):
+                idx = meaning_to_idx.get(value.upper())
+                if idx is not None:
+                    resolved[key] = idx
+
+        self.key_to_action = resolved
+        self._atari_meaning_to_idx = meaning_to_idx
+        self._atari_key_to_meaning = {}
+        for key, value in self._atari_key_bindings_raw.items():
+            if isinstance(value, str):
+                self._atari_key_to_meaning[key] = value.upper()
+
+    def _get_atari_action(self):
+        """Return the Discrete action index for Atari environments."""
+        if self.key_to_action is None:
+            self._resolve_atari_key_mapping()
+
+        pressed_meanings = set()
+        for key in self.current_keys:
+            if key in self._atari_key_to_meaning:
+                pressed_meanings.add(self._atari_key_to_meaning[key])
+
+        if not pressed_meanings:
+            return self.noop_action
+
+        composite = ""
+        if "UP" in pressed_meanings:
+            composite += "UP"
+        elif "DOWN" in pressed_meanings:
+            composite += "DOWN"
+        if "RIGHT" in pressed_meanings:
+            composite += "RIGHT"
+        elif "LEFT" in pressed_meanings:
+            composite += "LEFT"
+        if "FIRE" in pressed_meanings:
+            composite += "FIRE"
+
+        if not composite:
+            return self.noop_action
+
+        if composite in self._atari_meaning_to_idx:
+            return self._atari_meaning_to_idx[composite]
+
+        for key in self.current_keys:
+            if key in self.key_to_action:
+                return self.key_to_action[key]
+        return self.noop_action
+
+    def _init_vizdoom_key_mapping(self):
+        """Map important action names to their button indices."""
+        available = [b.name for b in self.env.unwrapped.game.get_available_buttons()]
+        offset = self.env.unwrapped.num_delta_buttons
+
+        def idx(name):
+            if name in available:
+                return available.index(name) - offset
+            return None
+
+        mapping = {
+            "ATTACK": idx("ATTACK"),
+            "USE": idx("USE"),
+            "MOVE_LEFT": idx("MOVE_LEFT"),
+            "MOVE_RIGHT": idx("MOVE_RIGHT"),
+            "MOVE_FORWARD": idx("MOVE_FORWARD"),
+            "MOVE_BACKWARD": idx("MOVE_BACKWARD"),
+            "TURN_LEFT": idx("TURN_LEFT"),
+            "TURN_RIGHT": idx("TURN_RIGHT"),
+            "SPEED": idx("SPEED"),
+        }
+        for i in range(1, 8):
+            mapping[f"SELECT_WEAPON{i}"] = idx(f"SELECT_WEAPON{i}")
+
+        space = self.env.action_space
+        if isinstance(space, gym.spaces.Dict):
+            space = space.get("binary")
+        if isinstance(space, gym.spaces.Discrete):
+            self._vizdoom_vector_map = {
+                tuple(combo): i for i, combo in enumerate(self.env.unwrapped.button_map)
+            }
+        else:
+            self._vizdoom_vector_map = None
+
+        return {k: v for k, v in mapping.items() if v is not None}
+
+    def _get_vizdoom_action(self):
+        """Return the MultiBinary action vector for VizDoom environments."""
+        if self._vizdoom_buttons is None:
+            self._vizdoom_buttons = self._init_vizdoom_key_mapping()
+        n_buttons = self.env.unwrapped.num_binary_buttons
+        action = np.zeros(n_buttons, dtype=np.int32)
+
+        pressed = self.current_keys
+        alt = pygame.K_LALT in pressed or pygame.K_RALT in pressed
+
+        def press(name):
+            idx = self._vizdoom_buttons.get(name)
+            if idx is not None and idx < n_buttons:
+                action[idx] = 1
+
+        for key, name in VIZDOOM_KEY_BINDINGS.items():
+            if key in pressed:
+                if key == pygame.K_LEFT:
+                    press("MOVE_LEFT" if alt else name)
+                elif key == pygame.K_RIGHT:
+                    press("MOVE_RIGHT" if alt else name)
+                else:
+                    press(name)
+
+        space = self.env.action_space
+        if isinstance(space, gym.spaces.Dict):
+            binary_space = space.get("binary")
+            continuous_space = space.get("continuous")
+            if isinstance(binary_space, gym.spaces.Discrete):
+                if self._vizdoom_vector_map is None:
+                    self._vizdoom_vector_map = {
+                        tuple(c): i for i, c in enumerate(self.env.unwrapped.button_map)
+                    }
+                binary_action = self._vizdoom_vector_map.get(tuple(action), 0)
+            else:
+                binary_action = action
+
+            if continuous_space is not None:
+                cont_shape = continuous_space.shape
+                continuous_action = np.zeros(cont_shape, dtype=np.float32)
+                return {"binary": binary_action, "continuous": continuous_action}
+            return {"binary": binary_action}
+
+        if isinstance(space, gym.spaces.Discrete):
+            if self._vizdoom_vector_map is None:
+                self._vizdoom_vector_map = {
+                    tuple(c): i for i, c in enumerate(self.env.unwrapped.button_map)
+                }
+            return self._vizdoom_vector_map.get(tuple(action), 0)
+
+        return action
+
+    def _get_stable_retro_action(self):
+        """Return the MultiBinary action vector for stable-retro environments."""
+        action = np.zeros(self.env.action_space.n, dtype=np.int32)
+        platform = getattr(self.env.unwrapped, "system", None)
+        mapping = STABLE_RETRO_KEY_BINDINGS.get(platform, {})
+        for key in self.current_keys:
+            idx = mapping.get(key)
+            if idx is not None and idx < action.shape[0]:
+                action[idx] = 1
+        return action
+
+    def get_action(self, observation):
+        """Map pressed keys to actions for the current environment."""
+        with self.key_lock:
+            if hasattr(self.env, "_vizdoom") and self.env._vizdoom:
+                return self._get_vizdoom_action()
+            if hasattr(self.env, "_stable_retro") and self.env._stable_retro:
+                return self._get_stable_retro_action()
+            return self._get_atari_action()
+
+    def handle_events(self) -> bool:
+        """Handle pygame input events."""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return False
+                with self.key_lock:
+                    self.current_keys.add(event.key)
+            elif event.type == pygame.KEYUP:
+                with self.key_lock:
+                    self.current_keys.discard(event.key)
+        return True
+
+
+class AgentInputSource(InputSource):
+    """Agent input via policy function."""
+
+    def __init__(self, policy, headless=False):
+        self.policy = policy
+        self.headless = headless
+
+    def get_action(self, observation):
+        """Get action from policy."""
+        return self.policy(observation)
+
+    def handle_events(self) -> bool:
+        """Minimal event handling - just check for ESC if not headless."""
+        if not self.headless:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return False
+        return True
+
+
+# =============================================================================
+# Policies
+# =============================================================================
+
+
+class BasePolicy(ABC):
+    """Abstract base class for agent policies."""
+
+    def __init__(self, action_space):
+        self.action_space = action_space
+
+    @abstractmethod
+    def __call__(self, observation):
+        """Return action for the given observation."""
+        pass
+
+
+class RandomPolicy(BasePolicy):
+    """Random policy that samples from the action space."""
+
+    def __call__(self, observation):
+        """Sample a random action from the action space."""
+        return self.action_space.sample()
+
+
 class DatasetRecorderWrapper(gym.Wrapper):
     """
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
     """
 
-    def __init__(self, env):
+    def __init__(self, env, input_source=None, headless=False):
         _lazy_init()
         super().__init__(env)
 
         self.recording = False
         self.frame_shape = None  # Delay initialization
         self.screen = None  # Delay initialization
+        self.headless = headless
+        self.input_source = input_source
 
-        pygame.init()
-        # pygame.display.set_caption will be set after env_id is available
+        if not headless:
+            pygame.init()
+            # pygame.display.set_caption will be set after env_id is available
 
         self.current_keys = set()
         self.key_lock = threading.Lock()
@@ -500,6 +794,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._overlay_visible = True
         self._recorded_dataset = None
         self._env_metadata = None
+        self._max_episodes = None  # None means unlimited
 
     def _ensure_screen(self, frame):
         """
@@ -817,7 +1112,11 @@ class DatasetRecorderWrapper(gym.Wrapper):
     def _render_frame(self, frame):
         """
         Render a frame using pygame, scaled by the configured scale factor.
+        Skip rendering in headless mode.
         """
+        if self.headless:
+            return
+
         # If frame is a dict (e.g., VizDoom), extract the image
         if isinstance(frame, dict):
             for k in ["obs", "image", "screen"]:
@@ -1018,10 +1317,16 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.display.flip()
             clock.tick(overlay_cfg["fps"])
 
-    async def record(self, fps=None):
-        """Record a gameplay session at the desired FPS."""
+    async def record(self, fps=None, max_episodes=None):
+        """Record a gameplay session at the desired FPS.
+
+        Args:
+            fps: Frames per second for rendering (ignored if headless)
+            max_episodes: Maximum number of episodes to record (None = unlimited for human, 1 for agent)
+        """
         if fps is None:
             fps = get_default_fps(self.env)
+        self._max_episodes = max_episodes
         self.recording = True
         try:
             return await self._record(fps=fps)
@@ -1035,12 +1340,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
         finally:
             # Don't delete temp_dir here - dataset.save_to_disk() needs the image files
             # temp_dir cleanup happens in main() after save_dataset_locally()
-            pygame.quit()
+            if not self.headless:
+                pygame.quit()
             self.env.close()
 
     async def _play(self, fps=None):
         """
         Main loop for interactive gameplay and recording.
+        Supports both human input (pygame) and agent input via InputSource abstraction.
         """
         if fps is None:
             fps = get_default_fps(self.env)
@@ -1063,19 +1370,35 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self._episode_count = 1
         self._cumulative_reward = 0.0
         obs, _ = self.env.reset(seed=seed)
-        self._ensure_screen(obs)  # Ensure pygame window is created after first obs
-        self._render_frame(obs)
-        self._print_keymappings()
-        if not self._wait_for_start():
-            return
-        with self.key_lock:
-            self.current_keys.clear()
+
+        # Setup input source
+        if self.input_source is None:
+            # Default to human input
+            self.input_source = HumanInputSource(
+                self.env, self.key_lock, self.current_keys
+            )
+
+        # For human input, show the start screen and keymappings
+        if isinstance(self.input_source, HumanInputSource):
+            self._ensure_screen(obs)
+            self._render_frame(obs)
+            self._print_keymappings()
+            if not self._wait_for_start():
+                return
+            with self.key_lock:
+                self.current_keys.clear()
+
         step = 0
         while True:
             frame_start = time.monotonic()
-            if not self._input_loop():
+
+            # Handle events through input source
+            if not self.input_source.handle_events():
                 break
-            action = self._get_user_action()
+
+            # Get action from input source
+            action = self.input_source.get_action(obs)
+
             self._record_frame(self._current_episode_uuid, seed, step, obs, action)
             obs, reward, terminated, truncated, info = self.env.step(action)
             self._cumulative_reward += float(reward)
@@ -1084,17 +1407,33 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 self.terminations.append(bool(terminated))
                 self.truncations.append(bool(truncated))
                 self.infos.append(json.dumps(info, default=_json_default))
+
             self._render_frame(obs)
-            elapsed = time.monotonic() - frame_start
-            remaining = (1.0 / self._fps) - elapsed
-            if remaining > 0:
-                await asyncio.sleep(remaining)
+
+            # Frame pacing: skip if headless (run at max speed)
+            if not self.headless:
+                elapsed = time.monotonic() - frame_start
+                remaining = (1.0 / self._fps) - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                else:
+                    await asyncio.sleep(0)
             else:
+                # In headless mode, yield control briefly to not block
                 await asyncio.sleep(0)
+
             step += 1
 
             if terminated or truncated:
                 self._record_terminal_observation(self._current_episode_uuid, obs)
+
+                # Check if we've reached the max episode count
+                if (
+                    self._max_episodes is not None
+                    and self._episode_count >= self._max_episodes
+                ):
+                    break
+
                 self._current_episode_uuid = uuid.uuid4()
                 seed = int(time.time())
                 obs, _ = self.env.reset(seed=seed)
@@ -1103,7 +1442,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 step = 0
                 self._render_frame(obs)
 
-        # Record terminal observation on user exit (ESC)
+        # Record terminal observation on user exit (ESC) or when max_episodes reached
         if self.recording and self.frames and self.actions[-1] != []:
             # Mark last real step as truncated: user exited mid-episode.
             # Minari requires at least one True in terminations or truncations per episode.
@@ -1126,6 +1465,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
             self._recorded_dataset = Dataset.from_dict(data)
             self._recorded_dataset = self._recorded_dataset.cast_column(
                 "observations", HFImage()
+            )
+            # Cast episode_id to binary(16) for efficient UUID storage
+            self._recorded_dataset = self._recorded_dataset.cast_column(
+                "episode_id", pa.binary(16)
             )
 
     def _extract_obs_image(self, obs):
@@ -1313,7 +1656,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         Clean up resources and save dataset if needed.
         """
         shutil.rmtree(self.temp_dir, ignore_errors=True)
-        pygame.quit()
+        if not self.headless:
+            pygame.quit()
         super().close()
 
 
@@ -2452,6 +2796,25 @@ async def main():
         default=False,
         help="Record without uploading to Hugging Face (no HF account required)",
     )
+    parser_record.add_argument(
+        "--agent",
+        type=str,
+        default="human",
+        choices=["human", "random"],
+        help="Input source: human (keyboard) or random policy (default: human)",
+    )
+    parser_record.add_argument(
+        "--headless",
+        action="store_true",
+        default=False,
+        help="Run without display (agent mode only, runs at max speed)",
+    )
+    parser_record.add_argument(
+        "--episodes",
+        type=int,
+        default=None,
+        help="Number of episodes to record (default: unlimited for human, 1 for agent)",
+    )
 
     parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
     parser_playback.add_argument(
@@ -2525,6 +2888,9 @@ async def main():
             ("fps", None),
             ("scale", None),
             ("dry_run", False),
+            ("agent", "human"),
+            ("headless", False),
+            ("episodes", None),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
@@ -2566,8 +2932,38 @@ async def main():
     fps = args.fps if args.fps is not None else get_default_fps(env)
 
     if args.command == "record":
-        recorder = DatasetRecorderWrapper(env)
-        recorded_dataset = await recorder.record(fps=fps)
+        # Setup input source based on --agent flag
+        if args.agent == "human":
+            if args.headless:
+                console.print(
+                    f"[{STYLE_FAIL}]Error: --headless can only be used with --agent (not human mode)[/]"
+                )
+                return
+            input_source = None  # Will default to HumanInputSource in _play
+            max_episodes = args.episodes  # None = unlimited for human
+        else:
+            # Agent mode
+            if args.agent == "random":
+                policy = RandomPolicy(env.action_space)
+            else:
+                console.print(
+                    f"[{STYLE_FAIL}]Error: Unknown agent type '{args.agent}'[/]"
+                )
+                return
+
+            input_source = AgentInputSource(policy, headless=args.headless)
+            # Default to 1 episode for agent if not specified
+            max_episodes = args.episodes if args.episodes is not None else 1
+
+            mode_str = "headless" if args.headless else "with display"
+            console.print(
+                f"[{STYLE_INFO}]Recording with {args.agent} agent ({mode_str}), {max_episodes} episode(s)[/]"
+            )
+
+        recorder = DatasetRecorderWrapper(
+            env, input_source=input_source, headless=args.headless
+        )
+        recorded_dataset = await recorder.record(fps=fps, max_episodes=max_episodes)
 
         if recorded_dataset is None:
             recorder.close()
@@ -2579,7 +2975,8 @@ async def main():
             f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]"
         )
 
-        if not args.dry_run:
+        # Skip upload prompt for headless/agent mode (auto-upload not supported yet)
+        if not args.dry_run and not args.headless and args.agent == "human":
             try:
                 do_upload = Confirm.ask(
                     "Upload to Hugging Face Hub?", default=True, console=console
@@ -2595,6 +2992,10 @@ async def main():
                 console.print(
                     f"To upload later: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
                 )
+        elif args.headless or args.agent != "human":
+            console.print(
+                f"[{STYLE_INFO}]Dataset saved locally. To upload: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
+            )
     elif args.command == "playback":
         loaded_dataset = load_local_dataset(env_id)
         if loaded_dataset is not None:
