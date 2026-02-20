@@ -3477,6 +3477,7 @@ async def main():
     fps = args.fps if args.fps is not None else get_default_fps(env)
 
     if args.command == "record":
+        recorder = None
         # Setup input source based on --agent flag
         if args.agent == "human":
             if args.headless:
@@ -3531,62 +3532,60 @@ async def main():
                     return
                 save_dataset_locally(recorded_dataset, env_id, metadata=env_metadata)
                 env.close()
-                console.print(
-                    f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]"
+
+            else:
+                # Single-worker agent path with progress bar
+                if args.agent == "random":
+                    policy = RandomPolicy(env.action_space)
+                input_source = AgentInputSource(policy, headless=args.headless)
+
+                recorder = DatasetRecorderWrapper(
+                    env, input_source=input_source, headless=args.headless
                 )
-                return
 
-            # Single-worker agent path with progress bar
-            if args.agent == "random":
-                policy = RandomPolicy(env.action_space)
-            input_source = AgentInputSource(policy, headless=args.headless)
+                total_steps_counter = [0]
 
-            recorder = DatasetRecorderWrapper(
-                env, input_source=input_source, headless=args.headless
-            )
+                def _make_progress_callback(task_id, progress_bar):
+                    def callback(episode_number, steps_in_episode):
+                        total_steps_counter[0] += steps_in_episode
+                        progress_bar.update(
+                            task_id,
+                            advance=1,
+                            description=f"[bold]Episodes[/] [dim]({total_steps_counter[0]} steps total)[/]",
+                        )
+                    return callback
 
-            total_steps_counter = [0]
-
-            def _make_progress_callback(task_id, progress_bar):
-                def callback(episode_number, steps_in_episode):
-                    total_steps_counter[0] += steps_in_episode
-                    progress_bar.update(
-                        task_id,
-                        advance=1,
-                        description=f"[bold]Episodes[/] [dim]({total_steps_counter[0]} steps total)[/]",
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                    console=console,
+                    transient=False,
+                ) as progress:
+                    task_id = progress.add_task("[bold]Episodes[/]", total=max_episodes)
+                    recorded_dataset = await recorder.record(
+                        fps=fps,
+                        max_episodes=max_episodes,
+                        max_steps=max_steps,
+                        progress_callback=_make_progress_callback(task_id, progress),
                     )
-                return callback
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-                console=console,
-                transient=False,
-            ) as progress:
-                task_id = progress.add_task("[bold]Episodes[/]", total=max_episodes)
-                recorded_dataset = await recorder.record(
-                    fps=fps,
-                    max_episodes=max_episodes,
-                    max_steps=max_steps,
-                    progress_callback=_make_progress_callback(task_id, progress),
-                )
 
         if recorded_dataset is None:
-            recorder.close()
+            if recorder is not None:
+                recorder.close()
             return
 
-        save_dataset_locally(recorded_dataset, env_id, metadata=recorder._env_metadata)
-        recorder.close()  # cleanup temp files after dataset is saved
+        if recorder is not None:
+            save_dataset_locally(recorded_dataset, env_id, metadata=recorder._env_metadata)
+            recorder.close()  # cleanup temp files after dataset is saved
         console.print(
             f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]"
         )
 
-        # Skip upload prompt for headless/agent mode (auto-upload not supported yet)
-        if not args.dry_run and not args.headless and args.agent == "human":
+        if not args.dry_run:
             try:
                 do_upload = Confirm.ask(
                     "Upload to Hugging Face Hub?", default=True, console=console
@@ -3602,10 +3601,6 @@ async def main():
                 console.print(
                     f"To upload later: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
                 )
-        elif args.headless or args.agent != "human":
-            console.print(
-                f"[{STYLE_INFO}]Dataset saved locally. To upload: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
-            )
     elif args.command == "playback":
         loaded_dataset = load_local_dataset(env_id)
         if loaded_dataset is not None:
