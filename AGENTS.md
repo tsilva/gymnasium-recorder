@@ -209,8 +209,3 @@ The `gymrec` entry point is installed in the venv:
 uv run gymrec record BreakoutNoFrameskip-v4
 uv run gymrec playback BreakoutNoFrameskip-v4
 ```
-
-## Current TODOs
-
-- Add Doom WAD support
-- Add validation for dataset fields

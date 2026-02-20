@@ -57,9 +57,12 @@ uv run gymrec record SuperMarioBros-Nes --agent random --headless --episodes 100
 
 # Same but with display (for monitoring)
 uv run gymrec record SuperMarioBros-Nes --agent random --episodes 10
+
+# Collect 100 episodes across 5 parallel worker processes
+uv run gymrec record BreakoutNoFrameskip-v4 --agent random --headless --episodes 100 --workers 5
 ```
 
-`--headless` skips rendering for maximum collection speed. `--episodes` defaults to 1 if omitted.
+`--headless` skips rendering for maximum collection speed. `--episodes` defaults to 1 if omitted. `--workers` spawns multiple parallel processes to distribute episode collection — requires `--agent` (not human mode).
 
 ### 🔄 Replay a dataset
 
