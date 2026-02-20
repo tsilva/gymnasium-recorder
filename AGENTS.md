@@ -114,7 +114,12 @@ All code is in `main.py`. The project prioritizes simplicity over modularization
 - Naming convention: `{username}/GymnasiumRecording__{env_id_underscored}`
 - Concatenates new recordings with existing datasets on Hub
 - Auto-generates dataset cards with episode/frame statistics
-- Fields: episode_id, timestamp, image (HFImage), step, action
+- Fields: `episode_id`, `seed`, `observations`, `actions`, `rewards`, `terminations`, `truncations`, `infos`, `session_id`, `collector`, `gymrec_version`
+- **Provenance columns** (added per-row, constant per session):
+  - `session_id` (`binary(16)`): UUID grouping all episodes from one `gymrec record` run
+  - `collector` (`string`): Who collected the data (`"human"`, `"random"`, or future agent names)
+  - `gymrec_version` (`string`): Version string like `"0.1.0+abc1234"` from `_get_gymrec_version()`
+- Backward-compatible concatenation: old datasets missing provenance columns get sentinel values (`"unknown"` / `b'\x00'*16`)
 
 **FPS Handling** (main.py:2713)
 - Attempts to read from environment metadata first

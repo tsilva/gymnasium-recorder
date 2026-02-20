@@ -47,6 +47,35 @@ import gymnasium as gym
 _initialized = False
 
 
+def _get_gymrec_version():
+    """Return version string like '0.1.0+abc1234' (or just '0.1.0' if git unavailable)."""
+    import subprocess
+
+    pyproject_path = os.path.join(os.path.dirname(__file__), "pyproject.toml")
+    try:
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+        version = data.get("project", {}).get("version", "unknown")
+    except Exception:
+        version = "unknown"
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=os.path.dirname(__file__),
+        )
+        if result.returncode == 0:
+            git_hash = result.stdout.strip()
+            return f"{version}+{git_hash}"
+    except Exception:
+        pass
+
+    return version
+
+
 def _json_default(obj):
     """JSON serializer for numpy types found in info dicts."""
     import numpy as _np
@@ -760,7 +789,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
     """
 
-    def __init__(self, env, input_source=None, headless=False):
+    def __init__(self, env, input_source=None, headless=False, collector="human"):
         _lazy_init()
         super().__init__(env)
 
@@ -769,6 +798,8 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.screen = None  # Delay initialization
         self.headless = headless
         self.input_source = input_source
+        self.collector = collector
+        self._gymrec_version = _get_gymrec_version()
 
         if not headless:
             pygame.init()
@@ -790,8 +821,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.terminations = []
         self.truncations = []
         self.infos = []
+        self.session_ids = []
         self._current_episode_uuid = None
         self._current_episode_seed = None
+        self._session_uuid = None
 
         self.temp_dir = tempfile.mkdtemp()
 
@@ -861,6 +894,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.seeds.append(self._current_episode_seed)
         self.frames.append(path)
         self.actions.append(self._normalize_action(action))
+        self.session_ids.append(self._session_uuid.bytes)
 
     def _record_terminal_observation(self, episode_uuid, frame):
         """Record a terminal observation row (Minari N+1 pattern).
@@ -881,6 +915,7 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.terminations.append(None)
         self.truncations.append(None)
         self.infos.append(None)
+        self.session_ids.append(self._session_uuid.bytes)
 
     def _input_loop(self):
         """
@@ -1373,10 +1408,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
         self.terminations.clear()
         self.truncations.clear()
         self.infos.clear()
+        self.session_ids.clear()
 
         # Capture environment metadata for dataset card
         self._env_metadata = _capture_env_metadata(self.env)
 
+        self._session_uuid = uuid.uuid4()
         self._current_episode_uuid = uuid.uuid4()
         self._current_episode_seed = int(time.time())
         seed = self._current_episode_seed
@@ -1487,14 +1524,20 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 "terminations": self.terminations,
                 "truncations": self.truncations,
                 "infos": self.infos,
+                "session_id": self.session_ids,
+                "collector": [self.collector] * len(self.frames),
+                "gymrec_version": [self._gymrec_version] * len(self.frames),
             }
             self._recorded_dataset = Dataset.from_dict(data)
             self._recorded_dataset = self._recorded_dataset.cast_column(
                 "observations", HFImage()
             )
-            # Cast episode_id to binary for efficient UUID storage
+            # Cast episode_id and session_id to binary for efficient UUID storage
             self._recorded_dataset = self._recorded_dataset.cast_column(
                 "episode_id", Value("binary")
+            )
+            self._recorded_dataset = self._recorded_dataset.cast_column(
+                "session_id", Value("binary")
             )
 
     def _extract_obs_image(self, obs):
@@ -1842,6 +1885,24 @@ def save_dataset_locally(dataset, env_id, metadata=None):
         # Load existing dataset - UUIDs are already unique, no offsetting needed
         existing_dataset = load_from_disk(path, keep_in_memory=True)
 
+        # Backward-compatible: add missing provenance columns with sentinel values
+        _SENTINEL_STR = "unknown"
+        _SENTINEL_BYTES = b'\x00' * 16
+        n_existing = len(existing_dataset)
+        if "session_id" not in existing_dataset.column_names:
+            existing_dataset = existing_dataset.add_column(
+                "session_id", [_SENTINEL_BYTES] * n_existing
+            )
+            existing_dataset = existing_dataset.cast_column("session_id", Value("binary"))
+        if "collector" not in existing_dataset.column_names:
+            existing_dataset = existing_dataset.add_column(
+                "collector", [_SENTINEL_STR] * n_existing
+            )
+        if "gymrec_version" not in existing_dataset.column_names:
+            existing_dataset = existing_dataset.add_column(
+                "gymrec_version", [_SENTINEL_STR] * n_existing
+            )
+
         # Concatenate datasets
         from datasets import concatenate_datasets
 
@@ -1864,13 +1925,19 @@ def save_dataset_locally(dataset, env_id, metadata=None):
         # Add recording timestamp
         if "recordings" not in existing_metadata:
             existing_metadata["recordings"] = []
-        existing_metadata["recordings"].append(
-            {
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "episodes": len(set(dataset["episode_id"])),
-                "frames": len(dataset),
-            }
-        )
+        # Extract provenance info from dataset columns if available
+        _collectors = set(dataset["collector"]) if "collector" in dataset.column_names else set()
+        _versions = set(dataset["gymrec_version"]) if "gymrec_version" in dataset.column_names else set()
+        recording_entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "episodes": len(set(dataset["episode_id"])),
+            "frames": len(dataset),
+        }
+        if _collectors:
+            recording_entry["collectors"] = sorted(_collectors)
+        if _versions:
+            recording_entry["gymrec_versions"] = sorted(_versions)
+        existing_metadata["recordings"].append(recording_entry)
         with open(metadata_path, "w") as f:
             json.dump(existing_metadata, f, indent=2, default=_json_default)
 
@@ -2334,6 +2401,17 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
     user_info = whoami()
     curator = user_info.get("name") or user_info.get("user") or "unknown"
 
+    # Extract provenance info from dataset columns
+    collectors = sorted(set(dataset["collector"])) if "collector" in dataset.column_names else []
+    gymrec_versions = sorted(set(dataset["gymrec_version"])) if "gymrec_version" in dataset.column_names else []
+
+    # Build dynamic intro based on collectors
+    if collectors and collectors != ["human"]:
+        collector_str = ", ".join(f"`{c}`" for c in collectors)
+        intro = f"Gameplay recordings (collected by: {collector_str}) from the Gymnasium environment `{env_id}`,"
+    else:
+        intro = f"Human gameplay recordings from the Gymnasium environment `{env_id}`,"
+
     card_data = DatasetCardData(
         language="en",
         license=CONFIG["dataset"]["license"],
@@ -2351,7 +2429,7 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
         "",
         f"# {env_id} Gameplay Dataset",
         "",
-        f"Human gameplay recordings from the Gymnasium environment `{env_id}`,",
+        intro,
         f"captured using [gymrec](https://github.com/tsilva/gymrec).",
         "",
         "## Dataset Summary",
@@ -2362,8 +2440,12 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
         f"| Episodes | {episodes:,} |",
         f"| Environment | `{env_id}` |",
         f"| Backend | {_BACKEND_LABELS.get(backend, backend)} |",
-        "",
     ]
+    if collectors:
+        content_lines.append(f"| Collector(s) | {', '.join(collectors)} |")
+    if gymrec_versions:
+        content_lines.append(f"| gymrec version(s) | {', '.join(gymrec_versions)} |")
+    content_lines.append("")
 
     # Add Environment Configuration section if metadata is available
     if metadata:
@@ -2456,6 +2538,9 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
             "- **terminations** (`bool` or `null`): Whether the episode terminated naturally (`null` on terminal observation rows)",
             "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
             "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
+            "- **session_id** (`binary(16)`): UUID grouping all episodes from one `gymrec record` run",
+            "- **collector** (`string`): Who collected the data (`\"human\"`, `\"random\"`, or future agent names)",
+            "- **gymrec_version** (`string`): Version of gymrec used to record (e.g. `\"0.1.0+abc1234\"`)",
             "",
             "## Usage",
             "",
@@ -2514,6 +2599,25 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
     curator = user_info.get("name") or user_info.get("user") or "unknown"
     metadata = load_local_metadata(env_id)
 
+    # Extract provenance info from local metadata recordings
+    all_collectors = set()
+    all_versions = set()
+    if metadata and "recordings" in metadata:
+        for rec in metadata["recordings"]:
+            for c in rec.get("collectors", []):
+                all_collectors.add(c)
+            for v in rec.get("gymrec_versions", []):
+                all_versions.add(v)
+    collectors = sorted(all_collectors)
+    gymrec_versions = sorted(all_versions)
+
+    # Build dynamic intro based on collectors
+    if collectors and collectors != ["human"]:
+        collector_str = ", ".join(f"`{c}`" for c in collectors)
+        intro = f"Gameplay recordings (collected by: {collector_str}) from the Gymnasium environment `{env_id}`,"
+    else:
+        intro = f"Human gameplay recordings from the Gymnasium environment `{env_id}`,"
+
     card_data = DatasetCardData(
         language="en",
         license=CONFIG["dataset"]["license"],
@@ -2531,7 +2635,7 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
         "",
         f"# {env_id} Gameplay Dataset",
         "",
-        f"Human gameplay recordings from the Gymnasium environment `{env_id}`,",
+        intro,
         f"captured using [gymrec](https://github.com/tsilva/gymrec).",
         "",
         "## Dataset Summary",
@@ -2542,8 +2646,12 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
         f"| Episodes | {total_episodes:,} |",
         f"| Environment | `{env_id}` |",
         f"| Backend | {_BACKEND_LABELS.get(backend, backend)} |",
-        "",
     ]
+    if collectors:
+        content_lines.append(f"| Collector(s) | {', '.join(collectors)} |")
+    if gymrec_versions:
+        content_lines.append(f"| gymrec version(s) | {', '.join(gymrec_versions)} |")
+    content_lines.append("")
 
     if metadata:
         content_lines.extend(
@@ -2619,6 +2727,9 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
             "- **terminations** (`bool` or `null`): Whether the episode terminated naturally (`null` on terminal observation rows)",
             "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
             "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
+            "- **session_id** (`binary(16)`): UUID grouping all episodes from one `gymrec record` run",
+            "- **collector** (`string`): Who collected the data (`\"human\"`, `\"random\"`, or future agent names)",
+            "- **gymrec_version** (`string`): Version of gymrec used to record (e.g. `\"0.1.0+abc1234\"`)",
             "",
             "## Usage",
             "",
@@ -3150,7 +3261,7 @@ def _worker_collect_episodes(env_id, worker_id, num_episodes, max_steps, agent_t
             raise ValueError(f"Unknown agent type: {agent_type}")
 
         input_source = AgentInputSource(policy, headless=True)
-        recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=True)
+        recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=True, collector=agent_type)
 
         def progress_callback(episode_number, steps_in_episode):
             try:
@@ -3488,7 +3599,7 @@ async def main():
             input_source = None  # Will default to HumanInputSource in _play
             max_episodes = args.episodes  # None = unlimited for human
             max_steps = getattr(args, "max_steps", None)
-            recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=False)
+            recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=False, collector="human")
             recorded_dataset = await recorder.record(fps=fps, max_episodes=max_episodes, max_steps=max_steps)
         else:
             # Agent mode
@@ -3540,7 +3651,7 @@ async def main():
                 input_source = AgentInputSource(policy, headless=args.headless)
 
                 recorder = DatasetRecorderWrapper(
-                    env, input_source=input_source, headless=args.headless
+                    env, input_source=input_source, headless=args.headless, collector=args.agent
                 )
 
                 total_steps_counter = [0]
