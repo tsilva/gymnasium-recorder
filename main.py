@@ -1953,19 +1953,23 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
                     f"[{STYLE_INFO}]Creating new dataset on Hugging Face Hub...[/]"
                 )
 
-            # Push with parent_commit for atomicity
+            # Push to main branch (let datasets library handle its own internal retry)
             console.print(f"[{STYLE_INFO}]Uploading to Hugging Face Hub...[/]")
             dataset_to_upload.push_to_hub(
                 hf_repo_id,
                 commit_message=f"Add recordings from {env_id}",
-                revision=parent_commit if parent_commit else None,
             )
 
-            # Generate/update dataset card
-            metadata = load_local_metadata(env_id)
-            generate_dataset_card(
-                dataset_to_upload, env_id, hf_repo_id, metadata=metadata
-            )
+            # Generate/update dataset card (best-effort, non-critical)
+            try:
+                metadata = load_local_metadata(env_id)
+                generate_dataset_card(
+                    dataset_to_upload, env_id, hf_repo_id, metadata=metadata
+                )
+            except Exception as card_err:
+                console.print(
+                    f"[{STYLE_INFO}]Dataset uploaded. Card update failed (non-critical): {card_err}[/]"
+                )
 
             console.print(
                 f"[{STYLE_SUCCESS}]Dataset uploaded: https://huggingface.co/datasets/{hf_repo_id}[/]"
@@ -1975,11 +1979,14 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
         except Exception as e:
             error_msg = str(e)
 
-            # Check if this is a conflict error (parent_commit is outdated)
+            # Check if this is a conflict error (412 Precondition Failed or similar)
             if (
                 "parent_commit" in error_msg.lower()
                 or "conflict" in error_msg.lower()
                 or "outdated" in error_msg.lower()
+                or "412" in error_msg
+                or "commit has happened" in error_msg.lower()
+                or "precondition" in error_msg.lower()
             ):
                 if attempt < max_retries:
                     wait_time = base_wait * (2 ** (attempt - 1))  # Exponential backoff
@@ -1999,9 +2006,6 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
             else:
                 # Non-conflict error, fail immediately
                 console.print(f"[{STYLE_FAIL}]Upload failed: {e}[/]")
-                console.print(
-                    f"To retry: [{STYLE_CMD}]uv run python main.py upload {env_id}[/]"
-                )
                 return False
 
     return False
