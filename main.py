@@ -401,7 +401,15 @@ def _lazy_init():
 
     global CONFIG
     global np, pygame, PILImage
-    global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token, CommitOperationAdd, hf_hub_download
+    global \
+        whoami, \
+        DatasetCard, \
+        DatasetCardData, \
+        HfApi, \
+        login, \
+        get_token, \
+        CommitOperationAdd, \
+        hf_hub_download
     global Dataset, HFImage, Value, load_dataset, load_from_disk, load_dataset_builder
     global \
         START_KEY, \
@@ -782,6 +790,61 @@ class RandomPolicy(BasePolicy):
     def __call__(self, observation):
         """Sample a random action from the action space."""
         return self.action_space.sample()
+
+
+class MarioRightJumpPolicy(BasePolicy):
+    """Policy for Super Mario Bros that biases toward moving right, running, and jumping.
+
+    Action probabilities for NES MultiBinary action space:
+    - RIGHT (index 7): 90% chance (increased - prioritize moving forward)
+    - B/Run (index 0): 70% chance (increased - hold B to run)
+    - A/Jump (index 8): 30% chance (decreased - jump less often)
+    - Other buttons: 10% chance each
+
+    NES button order: ["B", null, "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A"]
+    """
+
+    def __init__(self, action_space):
+        super().__init__(action_space)
+        # NES button indices for stable-retro (fceumm core)
+        # Button order: ["B", null, "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A"]
+        self.BUTTON_B = 0  # B button (run/fire)
+        # Index 1 is unused (null)
+        self.BUTTON_SELECT = 2
+        self.BUTTON_START = 3
+        self.BUTTON_UP = 4
+        self.BUTTON_DOWN = 5
+        self.BUTTON_LEFT = 6
+        self.BUTTON_RIGHT = 7  # Move right
+        self.BUTTON_A = 8  # A button (Jump)
+
+    def __call__(self, observation):
+        """Return biased action favoring right movement, running, and occasional jumping."""
+        import numpy as np
+
+        action = np.zeros(self.action_space.n, dtype=np.int32)
+
+        # Very high probability for RIGHT (90%) - prioritize moving forward
+        if np.random.random() < 0.90:
+            action[self.BUTTON_RIGHT] = 1
+
+        # High probability for B/Run (70%) - hold B to run fast
+        if np.random.random() < 0.70:
+            action[self.BUTTON_B] = 1
+
+        # Lower probability for JUMP/A (30%) - jump only occasionally
+        if np.random.random() < 0.30:
+            action[self.BUTTON_A] = 1
+
+        # Low probability for other buttons (10% each)
+        if np.random.random() < 0.10:
+            action[self.BUTTON_LEFT] = 1
+        if np.random.random() < 0.10:
+            action[self.BUTTON_DOWN] = 1
+        if np.random.random() < 0.10:
+            action[self.BUTTON_UP] = 1
+
+        return action
 
 
 class DatasetRecorderWrapper(gym.Wrapper):
@@ -1360,7 +1423,9 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.display.flip()
             clock.tick(overlay_cfg["fps"])
 
-    async def record(self, fps=None, max_episodes=None, max_steps=None, progress_callback=None):
+    async def record(
+        self, fps=None, max_episodes=None, max_steps=None, progress_callback=None
+    ):
         """Record a gameplay session at the desired FPS.
 
         Args:
@@ -1887,13 +1952,15 @@ def save_dataset_locally(dataset, env_id, metadata=None):
 
         # Backward-compatible: add missing provenance columns with sentinel values
         _SENTINEL_STR = "unknown"
-        _SENTINEL_BYTES = b'\x00' * 16
+        _SENTINEL_BYTES = b"\x00" * 16
         n_existing = len(existing_dataset)
         if "session_id" not in existing_dataset.column_names:
             existing_dataset = existing_dataset.add_column(
                 "session_id", [_SENTINEL_BYTES] * n_existing
             )
-            existing_dataset = existing_dataset.cast_column("session_id", Value("binary"))
+            existing_dataset = existing_dataset.cast_column(
+                "session_id", Value("binary")
+            )
         if "collector" not in existing_dataset.column_names:
             existing_dataset = existing_dataset.add_column(
                 "collector", [_SENTINEL_STR] * n_existing
@@ -1926,8 +1993,14 @@ def save_dataset_locally(dataset, env_id, metadata=None):
         if "recordings" not in existing_metadata:
             existing_metadata["recordings"] = []
         # Extract provenance info from dataset columns if available
-        _collectors = set(dataset["collector"]) if "collector" in dataset.column_names else set()
-        _versions = set(dataset["gymrec_version"]) if "gymrec_version" in dataset.column_names else set()
+        _collectors = (
+            set(dataset["collector"]) if "collector" in dataset.column_names else set()
+        )
+        _versions = (
+            set(dataset["gymrec_version"])
+            if "gymrec_version" in dataset.column_names
+            else set()
+        )
         recording_entry = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "episodes": len(set(dataset["episode_id"])),
@@ -1960,7 +2033,6 @@ def load_local_dataset(env_id):
     if not os.path.exists(path):
         return None
     return load_from_disk(path)
-
 
 
 def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
@@ -2088,7 +2160,9 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
                 api.preupload_lfs_files(
                     repo_id=hf_repo_id,
                     repo_type="dataset",
-                    additions=[op for op in operations if isinstance(op, CommitOperationAdd)],
+                    additions=[
+                        op for op in operations if isinstance(op, CommitOperationAdd)
+                    ],
                 )
                 api.create_commit(
                     repo_id=hf_repo_id,
@@ -2402,8 +2476,14 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
     curator = user_info.get("name") or user_info.get("user") or "unknown"
 
     # Extract provenance info from dataset columns
-    collectors = sorted(set(dataset["collector"])) if "collector" in dataset.column_names else []
-    gymrec_versions = sorted(set(dataset["gymrec_version"])) if "gymrec_version" in dataset.column_names else []
+    collectors = (
+        sorted(set(dataset["collector"])) if "collector" in dataset.column_names else []
+    )
+    gymrec_versions = (
+        sorted(set(dataset["gymrec_version"]))
+        if "gymrec_version" in dataset.column_names
+        else []
+    )
 
     # Build dynamic intro based on collectors
     if collectors and collectors != ["human"]:
@@ -2539,8 +2619,8 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
             "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
             "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
             "- **session_id** (`binary(16)`): UUID grouping all episodes from one `gymrec record` run",
-            "- **collector** (`string`): Who collected the data (`\"human\"`, `\"random\"`, or future agent names)",
-            "- **gymrec_version** (`string`): Version of gymrec used to record (e.g. `\"0.1.0+abc1234\"`)",
+            '- **collector** (`string`): Who collected the data (`"human"`, `"random"`, or future agent names)',
+            '- **gymrec_version** (`string`): Version of gymrec used to record (e.g. `"0.1.0+abc1234"`)',
             "",
             "## Usage",
             "",
@@ -2564,7 +2644,9 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
     )
 
 
-def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, repo_exists):
+def _build_dataset_card_content(
+    env_id, repo_id, api, new_frames, new_episodes, repo_exists
+):
     """Build dataset card content string for an append-only upload.
 
     If the repo exists, downloads the current README and parses existing frame/episode
@@ -2585,8 +2667,12 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
             )
             with open(readme_path) as f:
                 readme_content = f.read()
-            frames_match = re.search(r"\|\s*Total frames\s*\|\s*([\d,]+)\s*\|", readme_content)
-            episodes_match = re.search(r"\|\s*Episodes\s*\|\s*([\d,]+)\s*\|", readme_content)
+            frames_match = re.search(
+                r"\|\s*Total frames\s*\|\s*([\d,]+)\s*\|", readme_content
+            )
+            episodes_match = re.search(
+                r"\|\s*Episodes\s*\|\s*([\d,]+)\s*\|", readme_content
+            )
             if frames_match:
                 total_frames += int(frames_match.group(1).replace(",", ""))
             if episodes_match:
@@ -2669,14 +2755,18 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
         if "sticky_actions" in metadata:
             content_lines.append(f"| Sticky Actions | {metadata['sticky_actions']} |")
         if "max_episode_steps" in metadata:
-            content_lines.append(f"| Max Episode Steps | {metadata['max_episode_steps']} |")
+            content_lines.append(
+                f"| Max Episode Steps | {metadata['max_episode_steps']} |"
+            )
         if "observation_shape" in metadata:
             shape = metadata["observation_shape"]
             content_lines.append(
                 f"| Observation Shape | {' × '.join(str(s) for s in shape)} |"
             )
         if "observation_dtype" in metadata:
-            content_lines.append(f"| Observation Dtype | {metadata['observation_dtype']} |")
+            content_lines.append(
+                f"| Observation Dtype | {metadata['observation_dtype']} |"
+            )
         if "action_space_type" in metadata:
             content_lines.append(f"| Action Space | {metadata['action_space_type']} |")
         if "n_actions" in metadata:
@@ -2728,8 +2818,8 @@ def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, 
             "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
             "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
             "- **session_id** (`binary(16)`): UUID grouping all episodes from one `gymrec record` run",
-            "- **collector** (`string`): Who collected the data (`\"human\"`, `\"random\"`, or future agent names)",
-            "- **gymrec_version** (`string`): Version of gymrec used to record (e.g. `\"0.1.0+abc1234\"`)",
+            '- **collector** (`string`): Who collected the data (`"human"`, `"random"`, or future agent names)',
+            '- **gymrec_version** (`string`): Version of gymrec used to record (e.g. `"0.1.0+abc1234"`)',
             "",
             "## Usage",
             "",
@@ -3247,7 +3337,16 @@ def _distribute_episodes(total, num_workers):
     return [base + (1 if i < remainder else 0) for i in range(num_workers)]
 
 
-def _worker_collect_episodes(env_id, worker_id, num_episodes, max_steps, agent_type, fps, progress_queue, output_dir):
+def _worker_collect_episodes(
+    env_id,
+    worker_id,
+    num_episodes,
+    max_steps,
+    agent_type,
+    fps,
+    progress_queue,
+    output_dir,
+):
     """Top-level worker function for parallel episode collection (must be picklable)."""
     try:
         _lazy_init()
@@ -3257,19 +3356,27 @@ def _worker_collect_episodes(env_id, worker_id, num_episodes, max_steps, agent_t
 
         if agent_type == "random":
             policy = RandomPolicy(env.action_space)
+        elif agent_type == "mario":
+            policy = MarioRightJumpPolicy(env.action_space)
         else:
             raise ValueError(f"Unknown agent type: {agent_type}")
 
         input_source = AgentInputSource(policy, headless=True)
-        recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=True, collector=agent_type)
+        recorder = DatasetRecorderWrapper(
+            env, input_source=input_source, headless=True, collector=agent_type
+        )
 
         def progress_callback(episode_number, steps_in_episode):
             try:
-                progress_queue.put(("progress", worker_id, episode_number, steps_in_episode), block=False)
+                progress_queue.put(
+                    ("progress", worker_id, episode_number, steps_in_episode),
+                    block=False,
+                )
             except Exception:
                 pass
 
         import asyncio as _asyncio
+
         recorded_dataset = _asyncio.run(
             recorder.record(
                 fps=fps,
@@ -3291,6 +3398,7 @@ def _worker_collect_episodes(env_id, worker_id, num_episodes, max_steps, agent_t
 
     except Exception as e:
         import traceback
+
         progress_queue.put(("error", worker_id, str(e), traceback.format_exc()))
 
 
@@ -3316,7 +3424,16 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
     for worker_id, num_eps in active_counts:
         p = ctx.Process(
             target=_worker_collect_episodes,
-            args=(env_id, worker_id, num_eps, max_steps, agent_type, fps, progress_queue, output_dir),
+            args=(
+                env_id,
+                worker_id,
+                num_eps,
+                max_steps,
+                agent_type,
+                fps,
+                progress_queue,
+                output_dir,
+            ),
             daemon=True,
         )
         p.start()
@@ -3344,8 +3461,14 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
             while completed_workers < actual_workers:
                 # Check for dead workers
                 for worker_id, p in processes:
-                    if not p.is_alive() and p.exitcode != 0 and worker_id not in worker_paths:
-                        console.print(f"[{STYLE_FAIL}]Worker {worker_id} crashed (exit code {p.exitcode})[/]")
+                    if (
+                        not p.is_alive()
+                        and p.exitcode != 0
+                        and worker_id not in worker_paths
+                    ):
+                        console.print(
+                            f"[{STYLE_FAIL}]Worker {worker_id} crashed (exit code {p.exitcode})[/]"
+                        )
                         worker_paths[worker_id] = None
                         completed_workers += 1
 
@@ -3397,7 +3520,9 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
         p.join(timeout=10)
 
     # Collect valid datasets
-    valid_paths = [p for p in worker_paths.values() if p is not None and os.path.exists(p)]
+    valid_paths = [
+        p for p in worker_paths.values() if p is not None and os.path.exists(p)
+    ]
     if not valid_paths:
         shutil.rmtree(output_dir, ignore_errors=True)
         console.print(f"[{STYLE_FAIL}]No data collected from any worker.[/]")
@@ -3407,7 +3532,9 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
     merged = concatenate_datasets(datasets) if len(datasets) > 1 else datasets[0]
 
     # Use metadata from first successful worker
-    merged_metadata = next(iter(worker_metadata.values()), None) if worker_metadata else None
+    merged_metadata = (
+        next(iter(worker_metadata.values()), None) if worker_metadata else None
+    )
 
     shutil.rmtree(output_dir, ignore_errors=True)
     return merged, merged_metadata
@@ -3441,8 +3568,8 @@ async def main():
         "--agent",
         type=str,
         default="human",
-        choices=["human", "random"],
-        help="Input source: human (keyboard) or random policy (default: human)",
+        choices=["human", "random", "mario"],
+        help="Input source: human (keyboard), random policy, or mario policy (default: human)",
     )
     parser_record.add_argument(
         "--headless",
@@ -3599,11 +3726,15 @@ async def main():
             input_source = None  # Will default to HumanInputSource in _play
             max_episodes = args.episodes  # None = unlimited for human
             max_steps = getattr(args, "max_steps", None)
-            recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=False, collector="human")
-            recorded_dataset = await recorder.record(fps=fps, max_episodes=max_episodes, max_steps=max_steps)
+            recorder = DatasetRecorderWrapper(
+                env, input_source=input_source, headless=False, collector="human"
+            )
+            recorded_dataset = await recorder.record(
+                fps=fps, max_episodes=max_episodes, max_steps=max_steps
+            )
         else:
             # Agent mode
-            if args.agent not in ("random",):
+            if args.agent not in ("random", "mario"):
                 console.print(
                     f"[{STYLE_FAIL}]Error: Unknown agent type '{args.agent}'[/]"
                 )
@@ -3648,10 +3779,15 @@ async def main():
                 # Single-worker agent path with progress bar
                 if args.agent == "random":
                     policy = RandomPolicy(env.action_space)
+                elif args.agent == "mario":
+                    policy = MarioRightJumpPolicy(env.action_space)
                 input_source = AgentInputSource(policy, headless=args.headless)
 
                 recorder = DatasetRecorderWrapper(
-                    env, input_source=input_source, headless=args.headless, collector=args.agent
+                    env,
+                    input_source=input_source,
+                    headless=args.headless,
+                    collector=args.agent,
                 )
 
                 total_steps_counter = [0]
@@ -3664,6 +3800,7 @@ async def main():
                             advance=1,
                             description=f"[bold]Episodes[/] [dim]({total_steps_counter[0]} steps total)[/]",
                         )
+
                     return callback
 
                 with Progress(
@@ -3690,7 +3827,9 @@ async def main():
             return
 
         if recorder is not None:
-            save_dataset_locally(recorded_dataset, env_id, metadata=recorder._env_metadata)
+            save_dataset_locally(
+                recorded_dataset, env_id, metadata=recorder._env_metadata
+            )
             recorder.close()  # cleanup temp files after dataset is saved
         console.print(
             f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]"
