@@ -3,12 +3,14 @@ import sys
 import time
 import json
 import shutil
+import queue
 import threading
 import asyncio
 import tempfile
 import argparse
 import tomllib
 import uuid
+import multiprocessing
 from abc import ABC, abstractmethod
 
 from rich.console import Console
@@ -20,7 +22,9 @@ from rich.progress import (
     BarColumn,
     TextColumn,
     TimeRemainingColumn,
+    TimeElapsedColumn,
     MofNCompleteColumn,
+    SpinnerColumn,
 )
 
 console = Console()
@@ -1321,16 +1325,20 @@ class DatasetRecorderWrapper(gym.Wrapper):
             pygame.display.flip()
             clock.tick(overlay_cfg["fps"])
 
-    async def record(self, fps=None, max_episodes=None):
+    async def record(self, fps=None, max_episodes=None, max_steps=None, progress_callback=None):
         """Record a gameplay session at the desired FPS.
 
         Args:
             fps: Frames per second for rendering (ignored if headless)
             max_episodes: Maximum number of episodes to record (None = unlimited for human, 1 for agent)
+            max_steps: Maximum steps per episode (truncates episode after N steps)
+            progress_callback: Optional callable(episode_number, steps_in_episode) called after each episode
         """
         if fps is None:
             fps = get_default_fps(self.env)
         self._max_episodes = max_episodes
+        self._max_steps_per_episode = max_steps
+        self._progress_callback = progress_callback
         self.recording = True
         try:
             return await self._record(fps=fps)
@@ -1429,8 +1437,20 @@ class DatasetRecorderWrapper(gym.Wrapper):
 
             step += 1
 
+            # Truncate episode if max_steps reached
+            if (
+                self._max_steps_per_episode is not None
+                and step >= self._max_steps_per_episode
+                and not terminated
+                and not truncated
+            ):
+                truncated = True
+
             if terminated or truncated:
                 self._record_terminal_observation(self._current_episode_uuid, obs)
+
+                if self._progress_callback is not None:
+                    self._progress_callback(self._episode_count, step)
 
                 # Check if we've reached the max episode count
                 if (
@@ -3109,6 +3129,179 @@ def _import_roms(path: str):
     console.print(f"[{STYLE_SUCCESS}]Imported {imported_games} ROM(s)[/]")
 
 
+def _distribute_episodes(total, num_workers):
+    """Divide total episodes evenly among workers, distributing remainder to first workers."""
+    base = total // num_workers
+    remainder = total % num_workers
+    return [base + (1 if i < remainder else 0) for i in range(num_workers)]
+
+
+def _worker_collect_episodes(env_id, worker_id, num_episodes, max_steps, agent_type, fps, progress_queue, output_dir):
+    """Top-level worker function for parallel episode collection (must be picklable)."""
+    try:
+        _lazy_init()
+        env = create_env(env_id)
+        if fps is None:
+            fps = get_default_fps(env)
+
+        if agent_type == "random":
+            policy = RandomPolicy(env.action_space)
+        else:
+            raise ValueError(f"Unknown agent type: {agent_type}")
+
+        input_source = AgentInputSource(policy, headless=True)
+        recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=True)
+
+        def progress_callback(episode_number, steps_in_episode):
+            try:
+                progress_queue.put(("progress", worker_id, episode_number, steps_in_episode), block=False)
+            except Exception:
+                pass
+
+        import asyncio as _asyncio
+        recorded_dataset = _asyncio.run(
+            recorder.record(
+                fps=fps,
+                max_episodes=num_episodes,
+                max_steps=max_steps,
+                progress_callback=progress_callback,
+            )
+        )
+
+        env_metadata = recorder._env_metadata
+
+        if recorded_dataset is not None:
+            worker_path = os.path.join(output_dir, f"worker_{worker_id}")
+            recorded_dataset.save_to_disk(worker_path)
+            progress_queue.put(("done", worker_id, worker_path, env_metadata))
+        else:
+            progress_queue.put(("done", worker_id, None, None))
+        recorder.close()  # cleanup temp files after dataset is saved
+
+    except Exception as e:
+        import traceback
+        progress_queue.put(("error", worker_id, str(e), traceback.format_exc()))
+
+
+def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type, fps):
+    """Run parallel episode collection across multiple worker processes."""
+    from datasets import concatenate_datasets, load_from_disk as _load_from_disk
+
+    episode_counts = _distribute_episodes(total_episodes, num_workers)
+    # Filter out workers with 0 episodes
+    active_counts = [(i, count) for i, count in enumerate(episode_counts) if count > 0]
+    actual_workers = len(active_counts)
+
+    output_dir = tempfile.mkdtemp(prefix="gymrec_parallel_")
+
+    ctx = multiprocessing.get_context("spawn")
+    progress_queue = ctx.Queue()
+
+    console.print(
+        f"[{STYLE_INFO}]Starting {actual_workers} worker(s) to collect {total_episodes} episode(s)[/]"
+    )
+
+    processes = []
+    for worker_id, num_eps in active_counts:
+        p = ctx.Process(
+            target=_worker_collect_episodes,
+            args=(env_id, worker_id, num_eps, max_steps, agent_type, fps, progress_queue, output_dir),
+            daemon=True,
+        )
+        p.start()
+        processes.append((worker_id, p))
+
+    worker_paths = {}
+    worker_metadata = {}
+    completed_workers = 0
+    total_steps = 0
+    episodes_done = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task_id = progress.add_task("[bold]Episodes[/]", total=total_episodes)
+
+        try:
+            while completed_workers < actual_workers:
+                # Check for dead workers
+                for worker_id, p in processes:
+                    if not p.is_alive() and p.exitcode != 0 and worker_id not in worker_paths:
+                        console.print(f"[{STYLE_FAIL}]Worker {worker_id} crashed (exit code {p.exitcode})[/]")
+                        worker_paths[worker_id] = None
+                        completed_workers += 1
+
+                try:
+                    msg = progress_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
+                msg_type = msg[0]
+                if msg_type == "progress":
+                    _, wid, episode_number, steps_in_episode = msg
+                    total_steps += steps_in_episode
+                    episodes_done += 1
+                    progress.update(
+                        task_id,
+                        advance=1,
+                        description=f"[bold]Episodes[/] [dim]({total_steps} steps total)[/]",
+                    )
+                elif msg_type == "done":
+                    _, wid, path, metadata = msg
+                    worker_paths[wid] = path
+                    if metadata is not None:
+                        worker_metadata[wid] = metadata
+                    completed_workers += 1
+                elif msg_type == "error":
+                    _, wid, err_msg, tb = msg
+                    console.print(f"[{STYLE_FAIL}]Worker {wid} error: {err_msg}[/]")
+                    worker_paths[wid] = None
+                    completed_workers += 1
+
+        except KeyboardInterrupt:
+            console.print(f"\n[{STYLE_INFO}]Interrupted — terminating workers...[/]")
+            for _, p in processes:
+                p.terminate()
+            for _, p in processes:
+                p.join(timeout=5)
+            # Drain remaining messages
+            while True:
+                try:
+                    msg = progress_queue.get_nowait()
+                    if msg[0] == "done" and msg[2] is not None:
+                        worker_paths[msg[1]] = msg[2]
+                        if msg[3] is not None:
+                            worker_metadata[msg[1]] = msg[3]
+                except queue.Empty:
+                    break
+
+    for _, p in processes:
+        p.join(timeout=10)
+
+    # Collect valid datasets
+    valid_paths = [p for p in worker_paths.values() if p is not None and os.path.exists(p)]
+    if not valid_paths:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        console.print(f"[{STYLE_FAIL}]No data collected from any worker.[/]")
+        return None, None
+
+    datasets = [_load_from_disk(p, keep_in_memory=True) for p in valid_paths]
+    merged = concatenate_datasets(datasets) if len(datasets) > 1 else datasets[0]
+
+    # Use metadata from first successful worker
+    merged_metadata = next(iter(worker_metadata.values()), None) if worker_metadata else None
+
+    shutil.rmtree(output_dir, ignore_errors=True)
+    return merged, merged_metadata
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Gymnasium Recorder/Playback")
     subparsers = parser.add_subparsers(dest="command")
@@ -3151,6 +3344,19 @@ async def main():
         type=int,
         default=None,
         help="Number of episodes to record (default: unlimited for human, 1 for agent)",
+    )
+    parser_record.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        dest="max_steps",
+        help="Maximum steps per episode (truncates episode after N steps)",
+    )
+    parser_record.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes for agent data collection (default: 1)",
     )
 
     parser_playback = subparsers.add_parser("playback", help="Replay a dataset")
@@ -3228,6 +3434,8 @@ async def main():
             ("agent", "human"),
             ("headless", False),
             ("episodes", None),
+            ("max_steps", None),
+            ("workers", 1),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
@@ -3278,29 +3486,94 @@ async def main():
                 return
             input_source = None  # Will default to HumanInputSource in _play
             max_episodes = args.episodes  # None = unlimited for human
+            max_steps = getattr(args, "max_steps", None)
+            recorder = DatasetRecorderWrapper(env, input_source=input_source, headless=False)
+            recorded_dataset = await recorder.record(fps=fps, max_episodes=max_episodes, max_steps=max_steps)
         else:
             # Agent mode
-            if args.agent == "random":
-                policy = RandomPolicy(env.action_space)
-            else:
+            if args.agent not in ("random",):
                 console.print(
                     f"[{STYLE_FAIL}]Error: Unknown agent type '{args.agent}'[/]"
                 )
                 return
 
-            input_source = AgentInputSource(policy, headless=args.headless)
+            # Validate --workers usage
+            workers = getattr(args, "workers", 1)
+            if workers > 1 and args.agent == "human":
+                console.print(
+                    f"[{STYLE_FAIL}]Error: --workers requires --agent (not human mode)[/]"
+                )
+                return
+            if workers > 1:
+                args.headless = True  # Force headless for parallel workers
+
             # Default to 1 episode for agent if not specified
             max_episodes = args.episodes if args.episodes is not None else 1
+            max_steps = getattr(args, "max_steps", None)
 
             mode_str = "headless" if args.headless else "with display"
             console.print(
                 f"[{STYLE_INFO}]Recording with {args.agent} agent ({mode_str}), {max_episodes} episode(s)[/]"
             )
 
-        recorder = DatasetRecorderWrapper(
-            env, input_source=input_source, headless=args.headless
-        )
-        recorded_dataset = await recorder.record(fps=fps, max_episodes=max_episodes)
+            if workers > 1:
+                # Parallel collection path
+                recorded_dataset, env_metadata = _parallel_record(
+                    env_id=env_id,
+                    num_workers=workers,
+                    total_episodes=max_episodes,
+                    max_steps=max_steps,
+                    agent_type=args.agent,
+                    fps=fps,
+                )
+                if recorded_dataset is None:
+                    env.close()
+                    return
+                save_dataset_locally(recorded_dataset, env_id, metadata=env_metadata)
+                env.close()
+                console.print(
+                    f"To play back: [{STYLE_CMD}]uv run python main.py playback {env_id}[/]"
+                )
+                return
+
+            # Single-worker agent path with progress bar
+            if args.agent == "random":
+                policy = RandomPolicy(env.action_space)
+            input_source = AgentInputSource(policy, headless=args.headless)
+
+            recorder = DatasetRecorderWrapper(
+                env, input_source=input_source, headless=args.headless
+            )
+
+            total_steps_counter = [0]
+
+            def _make_progress_callback(task_id, progress_bar):
+                def callback(episode_number, steps_in_episode):
+                    total_steps_counter[0] += steps_in_episode
+                    progress_bar.update(
+                        task_id,
+                        advance=1,
+                        description=f"[bold]Episodes[/] [dim]({total_steps_counter[0]} steps total)[/]",
+                    )
+                return callback
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                transient=False,
+            ) as progress:
+                task_id = progress.add_task("[bold]Episodes[/]", total=max_episodes)
+                recorded_dataset = await recorder.record(
+                    fps=fps,
+                    max_episodes=max_episodes,
+                    max_steps=max_steps,
+                    progress_callback=_make_progress_callback(task_id, progress),
+                )
 
         if recorded_dataset is None:
             recorder.close()
