@@ -3516,9 +3516,16 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
                     _, wid, episode_number, step_number = msg
                     worker_states[wid]["episode"] = episode_number
                     worker_states[wid]["step"] = step_number
+                    # Calculate total steps across all workers
+                    current_total_steps = sum(s["step"] for s in worker_states.values())
                     progress.update(
                         worker_task_ids[wid],
                         description=f"[cyan]Worker {wid}[/] [dim]Ep {episode_number}, Step {step_number}[/]",
+                    )
+                    # Update main progress bar with live step count (don't advance, just update description)
+                    progress.update(
+                        main_task_id,
+                        description=f"[bold]Episodes[/] [dim]({current_total_steps} steps)[/]",
                     )
                 elif msg_type == "progress":
                     # Episode completed
