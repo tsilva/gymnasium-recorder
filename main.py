@@ -1793,7 +1793,7 @@ def save_dataset_locally(dataset, env_id, metadata=None):
 
     if os.path.exists(path):
         # Load existing dataset - UUIDs are already unique, no offsetting needed
-        existing_dataset = load_from_disk(path)
+        existing_dataset = load_from_disk(path, keep_in_memory=True)
 
         # Concatenate datasets
         from datasets import concatenate_datasets
