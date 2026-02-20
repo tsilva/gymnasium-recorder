@@ -368,7 +368,7 @@ def _lazy_init():
 
     global CONFIG
     global np, pygame, PILImage
-    global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token
+    global whoami, DatasetCard, DatasetCardData, HfApi, login, get_token, CommitOperationAdd, hf_hub_download
     global Dataset, HFImage, Value, load_dataset, load_from_disk, load_dataset_builder
     global \
         START_KEY, \
@@ -386,6 +386,8 @@ def _lazy_init():
         HfApi,
         login,
         get_token,
+        CommitOperationAdd,
+        hf_hub_download,
     )
     from datasets import (
         Dataset,
@@ -1786,6 +1788,31 @@ def _get_metadata_path(env_id):
     )
 
 
+def _get_uploaded_episodes_path(env_id):
+    """Return the path to the uploaded episodes tracking file for a given environment."""
+    encoded_env_id = _encode_env_id_for_hf(env_id)
+    return os.path.join(
+        CONFIG["storage"]["local_dir"], f"{encoded_env_id}_uploaded.json"
+    )
+
+
+def _load_uploaded_episode_ids(env_id):
+    """Load the set of already-uploaded episode IDs from local tracking file."""
+    path = _get_uploaded_episodes_path(env_id)
+    if not os.path.exists(path):
+        return set()
+    with open(path) as f:
+        return set(json.load(f))
+
+
+def _save_uploaded_episode_ids(env_id, episode_ids: set):
+    """Save the set of uploaded episode IDs to local tracking file."""
+    path = _get_uploaded_episodes_path(env_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(list(episode_ids), f)
+
+
 def save_dataset_locally(dataset, env_id, metadata=None):
     """Save dataset to local disk, appending to any existing data."""
     path = get_local_dataset_path(env_id)
@@ -1848,51 +1875,14 @@ def load_local_dataset(env_id):
     return load_from_disk(path)
 
 
-def _merge_datasets(local_dataset, remote_dataset):
-    """Merge two datasets, deduplicating by episode_id."""
-    from datasets import concatenate_datasets
-
-    # Get existing episode IDs from remote
-    remote_episode_ids = set()
-    for row in remote_dataset:
-        eid = row["episode_id"]
-        if isinstance(eid, bytes):
-            eid = uuid.UUID(bytes=eid)
-        remote_episode_ids.add(eid)
-
-    # Filter local dataset to only new episodes
-    local_episode_ids = []
-    for row in local_dataset:
-        eid = row["episode_id"]
-        if isinstance(eid, bytes):
-            eid = uuid.UUID(bytes=eid)
-        local_episode_ids.append(eid)
-
-    # Find indices of new episodes in local dataset
-    new_indices = [
-        i for i, eid in enumerate(local_episode_ids) if eid not in remote_episode_ids
-    ]
-
-    if not new_indices:
-        console.print(
-            f"[{STYLE_INFO}]All episodes already exist on remote, nothing to upload[/]"
-        )
-        return remote_dataset
-
-    # Select only new rows from local dataset
-    new_local = local_dataset.select(new_indices)
-
-    # Concatenate remote + new local data
-    merged = concatenate_datasets([remote_dataset, new_local])
-    return merged
-
 
 def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
-    """Load local dataset and push to Hugging Face Hub with optimistic locking.
+    """Upload new episodes to HF Hub using append-only shard uploads.
 
-    Uses optimistic locking with retry to handle concurrent uploads from multiple clients.
-    Downloads the remote dataset, merges with local data (deduplicating by episode_id),
-    and pushes atomically using parent_commit.
+    Only uploads episodes that have not been uploaded before (tracked in a local
+    JSON file). Uploads new data as a parquet shard alongside existing shards —
+    no remote data is downloaded or replaced. Uses optimistic locking via
+    parent_commit in create_commit() to handle concurrent uploads safely.
 
     Args:
         env_id: The environment ID to upload
@@ -1910,66 +1900,119 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
         )
         return False
 
+    # Filter to episodes not yet uploaded
+    already_uploaded = _load_uploaded_episode_ids(env_id)
+    new_indices = []
+    new_episode_ids = set()
+    for i, row in enumerate(local_dataset):
+        eid = row["episode_id"]
+        if isinstance(eid, bytes):
+            eid = uuid.UUID(bytes=eid).hex
+        elif isinstance(eid, uuid.UUID):
+            eid = eid.hex
+        else:
+            eid = str(eid)
+        if eid not in already_uploaded:
+            new_indices.append(i)
+            new_episode_ids.add(eid)
+
+    if not new_indices:
+        console.print(f"[{STYLE_INFO}]All episodes already uploaded, nothing to do[/]")
+        return True
+
+    new_dataset = local_dataset.select(new_indices)
+    n_new_episodes = len(new_episode_ids)
+    console.print(
+        f"[{STYLE_INFO}]Uploading {n_new_episodes} new episodes ({len(new_indices)} frames)...[/]"
+    )
+
     hf_repo_id = env_id_to_hf_repo_id(env_id)
     api = HfApi()
 
     for attempt in range(1, max_retries + 1):
         try:
-            # Get current repo info to check if it exists and get latest commit
+            # 1. Check repo existence and get parent commit
+            repo_exists = False
+            parent_commit = None
             try:
                 repo_info = api.repo_info(repo_id=hf_repo_id, repo_type="dataset")
-                parent_commit = repo_info.sha if repo_info else None
+                repo_exists = True
+                parent_commit = repo_info.sha
             except Exception:
-                # Repo doesn't exist yet, will be created
-                parent_commit = None
+                pass
 
-            if parent_commit:
-                # Download remote dataset
-                console.print(
-                    f"[{STYLE_INFO}]Downloading remote dataset (attempt {attempt}/{max_retries})...[/]"
-                )
+            if not repo_exists:
+                api.create_repo(repo_id=hf_repo_id, repo_type="dataset", exist_ok=True)
+                repo_info = api.repo_info(repo_id=hf_repo_id, repo_type="dataset")
+                parent_commit = repo_info.sha
+
+            # 2. Count existing shards to determine next shard index
+            next_shard_idx = 0
+            if repo_exists:
                 try:
-                    remote_dataset = load_dataset(
-                        hf_repo_id, split="train", revision=parent_commit
+                    for item in api.list_repo_tree(
+                        hf_repo_id, repo_type="dataset", path_in_repo="data"
+                    ):
+                        if hasattr(item, "rfilename"):
+                            name = item.rfilename
+                        else:
+                            name = str(item)
+                        if name.startswith("data/train-") and name.endswith(".parquet"):
+                            next_shard_idx += 1
+                except Exception:
+                    pass  # No data/ dir yet, start at 0
+
+            # 3. Write new episodes as parquet shard to temp dir
+            import tempfile
+
+            operations = []
+            with tempfile.TemporaryDirectory() as tmpdir:
+                shard_path = os.path.join(tmpdir, "shard.parquet")
+                new_dataset.to_parquet(shard_path)
+                shard_name = f"data/train-{next_shard_idx:05d}-of-{next_shard_idx + 1:05d}.parquet"
+                operations.append(
+                    CommitOperationAdd(
+                        path_in_repo=shard_name,
+                        path_or_fileobj=shard_path,
                     )
-                    # Merge datasets, keeping only new episodes
-                    dataset_to_upload = _merge_datasets(local_dataset, remote_dataset)
-                    n_new_episodes = len(set(local_dataset["episode_id"])) - len(
-                        set(remote_dataset["episode_id"])
-                    )
-                    if n_new_episodes > 0:
-                        console.print(
-                            f"[{STYLE_INFO}]Adding {n_new_episodes} new episodes to remote dataset[/]"
+                )
+
+                # 4. Build updated dataset card
+                card_content = _build_dataset_card_content(
+                    env_id,
+                    hf_repo_id,
+                    api,
+                    new_frames=len(new_indices),
+                    new_episodes=n_new_episodes,
+                    repo_exists=repo_exists,
+                )
+                if card_content:
+                    card_path = os.path.join(tmpdir, "README.md")
+                    with open(card_path, "w") as f:
+                        f.write(card_content)
+                    operations.append(
+                        CommitOperationAdd(
+                            path_in_repo="README.md",
+                            path_or_fileobj=card_path,
                         )
-                except Exception as e:
-                    console.print(
-                        f"[{STYLE_FAIL}]Failed to download remote dataset: {e}[/]"
                     )
-                    return False
-            else:
-                # No remote dataset exists, upload local as-is
-                dataset_to_upload = local_dataset
-                console.print(
-                    f"[{STYLE_INFO}]Creating new dataset on Hugging Face Hub...[/]"
+
+                # 5. Pre-upload LFS files then atomic commit
+                api.preupload_lfs_files(
+                    repo_id=hf_repo_id,
+                    repo_type="dataset",
+                    additions=[op for op in operations if isinstance(op, CommitOperationAdd)],
+                )
+                api.create_commit(
+                    repo_id=hf_repo_id,
+                    repo_type="dataset",
+                    operations=operations,
+                    commit_message=f"Add recordings from {env_id}",
+                    parent_commit=parent_commit,
                 )
 
-            # Push to main branch (let datasets library handle its own internal retry)
-            console.print(f"[{STYLE_INFO}]Uploading to Hugging Face Hub...[/]")
-            dataset_to_upload.push_to_hub(
-                hf_repo_id,
-                commit_message=f"Add recordings from {env_id}",
-            )
-
-            # Generate/update dataset card (best-effort, non-critical)
-            try:
-                metadata = load_local_metadata(env_id)
-                generate_dataset_card(
-                    dataset_to_upload, env_id, hf_repo_id, metadata=metadata
-                )
-            except Exception as card_err:
-                console.print(
-                    f"[{STYLE_INFO}]Dataset uploaded. Card update failed (non-critical): {card_err}[/]"
-                )
+            # 6. Track uploaded episodes locally
+            _save_uploaded_episode_ids(env_id, already_uploaded | new_episode_ids)
 
             console.print(
                 f"[{STYLE_SUCCESS}]Dataset uploaded: https://huggingface.co/datasets/{hf_repo_id}[/]"
@@ -1978,8 +2021,6 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
 
         except Exception as e:
             error_msg = str(e)
-
-            # Check if this is a conflict error (412 Precondition Failed or similar)
             if (
                 "parent_commit" in error_msg.lower()
                 or "conflict" in error_msg.lower()
@@ -1989,7 +2030,7 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
                 or "precondition" in error_msg.lower()
             ):
                 if attempt < max_retries:
-                    wait_time = base_wait * (2 ** (attempt - 1))  # Exponential backoff
+                    wait_time = base_wait * (2 ** (attempt - 1))
                     console.print(
                         f"[{STYLE_INFO}]Conflict detected, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})...[/]"
                     )
@@ -1997,14 +2038,13 @@ def upload_local_dataset(env_id, max_retries=5, base_wait=1.0):
                     continue
                 else:
                     console.print(
-                        f"[{STYLE_FAIL}]Max retries ({max_retries}) exceeded. Concurrent modifications detected.[/]"
+                        f"[{STYLE_FAIL}]Max retries ({max_retries}) exceeded.[/]"
                     )
                     console.print(
-                        f"[{STYLE_INFO}]Another client may be uploading simultaneously. Please try again later.[/]"
+                        f"[{STYLE_INFO}]Another client may be uploading. Try again later.[/]"
                     )
                     return False
             else:
-                # Non-conflict error, fail immediately
                 console.print(f"[{STYLE_FAIL}]Upload failed: {e}[/]")
                 return False
 
@@ -2357,9 +2397,11 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
             if "retro_game" in metadata and metadata["retro_game"]:
                 content_lines.append(f"| Game | {metadata['retro_game']} |")
             if "retro_buttons" in metadata and metadata["retro_buttons"]:
-                buttons = ", ".join(metadata["retro_buttons"][:8])
-                if len(metadata["retro_buttons"]) > 8:
-                    buttons += f" (+{len(metadata['retro_buttons']) - 8} more)"
+                named = [b for b in metadata["retro_buttons"][:8] if b is not None]
+                buttons = ", ".join(named)
+                total_named = sum(1 for b in metadata["retro_buttons"] if b is not None)
+                if total_named > 8:
+                    buttons += f" (+{total_named - 8} more)"
                 content_lines.append(f"| Buttons | {buttons} |")
 
         elif backend == "vizdoom":
@@ -2415,6 +2457,163 @@ def generate_dataset_card(dataset, env_id, repo_id, metadata=None):
         repo_type="dataset",
         commit_message=CONFIG["dataset"]["commit_message"],
     )
+
+
+def _build_dataset_card_content(env_id, repo_id, api, new_frames, new_episodes, repo_exists):
+    """Build dataset card content string for an append-only upload.
+
+    If the repo exists, downloads the current README and parses existing frame/episode
+    counts to compute running totals. Otherwise starts from new_frames/new_episodes.
+    Returns the full card content string (does not push to Hub).
+    """
+    import re
+
+    total_frames = new_frames
+    total_episodes = new_episodes
+
+    if repo_exists:
+        try:
+            readme_path = hf_hub_download(
+                repo_id=repo_id,
+                repo_type="dataset",
+                filename="README.md",
+            )
+            with open(readme_path) as f:
+                readme_content = f.read()
+            frames_match = re.search(r"\|\s*Total frames\s*\|\s*([\d,]+)\s*\|", readme_content)
+            episodes_match = re.search(r"\|\s*Episodes\s*\|\s*([\d,]+)\s*\|", readme_content)
+            if frames_match:
+                total_frames += int(frames_match.group(1).replace(",", ""))
+            if episodes_match:
+                total_episodes += int(episodes_match.group(1).replace(",", ""))
+        except Exception:
+            pass
+
+    backend = _detect_backend(env_id)
+    user_info = whoami()
+    curator = user_info.get("name") or user_info.get("user") or "unknown"
+    metadata = load_local_metadata(env_id)
+
+    card_data = DatasetCardData(
+        language="en",
+        license=CONFIG["dataset"]["license"],
+        task_categories=CONFIG["dataset"]["task_categories"],
+        tags=["gymnasium", backend, env_id],
+        size_categories=[_size_category(total_frames)],
+        pretty_name=f"{env_id} Gameplay Dataset",
+    )
+
+    header = card_data.to_yaml()
+    content_lines = [
+        "---",
+        header,
+        "---",
+        "",
+        f"# {env_id} Gameplay Dataset",
+        "",
+        f"Human gameplay recordings from the Gymnasium environment `{env_id}`,",
+        f"captured using [gymrec](https://github.com/tsilva/gymrec).",
+        "",
+        "## Dataset Summary",
+        "",
+        "| Stat | Value |",
+        "|------|-------|",
+        f"| Total frames | {total_frames:,} |",
+        f"| Episodes | {total_episodes:,} |",
+        f"| Environment | `{env_id}` |",
+        f"| Backend | {_BACKEND_LABELS.get(backend, backend)} |",
+        "",
+    ]
+
+    if metadata:
+        content_lines.extend(
+            [
+                "## Environment Configuration",
+                "",
+                "| Setting | Value |",
+                "|---------|-------|",
+            ]
+        )
+        if "frameskip" in metadata:
+            content_lines.append(f"| Frameskip | {metadata['frameskip']} |")
+        if "fps" in metadata:
+            content_lines.append(f"| Target FPS | {metadata['fps']} |")
+        if "sticky_actions" in metadata:
+            content_lines.append(f"| Sticky Actions | {metadata['sticky_actions']} |")
+        if "max_episode_steps" in metadata:
+            content_lines.append(f"| Max Episode Steps | {metadata['max_episode_steps']} |")
+        if "observation_shape" in metadata:
+            shape = metadata["observation_shape"]
+            content_lines.append(
+                f"| Observation Shape | {' × '.join(str(s) for s in shape)} |"
+            )
+        if "observation_dtype" in metadata:
+            content_lines.append(f"| Observation Dtype | {metadata['observation_dtype']} |")
+        if "action_space_type" in metadata:
+            content_lines.append(f"| Action Space | {metadata['action_space_type']} |")
+        if "n_actions" in metadata:
+            content_lines.append(f"| Number of Actions | {metadata['n_actions']} |")
+        if "reward_range" in metadata:
+            rmin, rmax = metadata["reward_range"]
+            content_lines.append(f"| Reward Range | [{rmin}, {rmax}] |")
+        if backend == "stable-retro":
+            if "retro_platform" in metadata and metadata["retro_platform"]:
+                content_lines.append(f"| Platform | {metadata['retro_platform']} |")
+            if "retro_game" in metadata and metadata["retro_game"]:
+                content_lines.append(f"| Game | {metadata['retro_game']} |")
+            if "retro_buttons" in metadata and metadata["retro_buttons"]:
+                named = [b for b in metadata["retro_buttons"][:8] if b is not None]
+                buttons = ", ".join(named)
+                total_named = sum(1 for b in metadata["retro_buttons"] if b is not None)
+                if total_named > 8:
+                    buttons += f" (+{total_named - 8} more)"
+                content_lines.append(f"| Buttons | {buttons} |")
+        elif backend == "vizdoom":
+            if "vizdoom_scenario" in metadata and metadata["vizdoom_scenario"]:
+                content_lines.append(f"| Scenario | {metadata['vizdoom_scenario']} |")
+            if "vizdoom_num_binary_buttons" in metadata:
+                content_lines.append(
+                    f"| Binary Buttons | {metadata['vizdoom_num_binary_buttons']} |"
+                )
+            if "vizdoom_num_delta_buttons" in metadata:
+                content_lines.append(
+                    f"| Delta Buttons | {metadata['vizdoom_num_delta_buttons']} |"
+                )
+        content_lines.append("")
+
+    content_lines.extend(
+        [
+            "## Dataset Structure",
+            "",
+            "Minari-compatible flat table format. Use `minari-export` for native [Minari](https://minari.farama.org/) HDF5 format.",
+            "",
+            "Each episode has N step rows plus one terminal observation row (N+1 pattern).",
+            "The terminal observation is the final state after the last step — it has an empty action",
+            "and null values for rewards/terminations/truncations/infos.",
+            "",
+            "- **episode_id** (`binary(16)`): Unique UUID identifier for each episode (16 bytes, universally unique across all recordings)",
+            "- **seed** (`int` or `null`): RNG seed used for `env.reset()` (set on first row of each episode, `null` on other rows)",
+            "- **observations** (`Image`): RGB frame from the environment",
+            "- **actions** (`list`): Action taken at this step (`[]` for terminal observations)",
+            "- **rewards** (`float` or `null`): Reward received (`null` on terminal observation rows)",
+            "- **terminations** (`bool` or `null`): Whether the episode terminated naturally (`null` on terminal observation rows)",
+            "- **truncations** (`bool` or `null`): Whether the episode was truncated (`null` on terminal observation rows)",
+            "- **infos** (`str` or `null`): Additional environment info as JSON (`null` on terminal observation rows)",
+            "",
+            "## Usage",
+            "",
+            "```python",
+            "from datasets import load_dataset",
+            f'ds = load_dataset("{repo_id}")',
+            "```",
+            "",
+            "## About",
+            "",
+            "Recorded with [gymrec](https://github.com/tsilva/gymrec).",
+            f"Curated by: {curator}",
+        ]
+    )
+    return "\n".join(content_lines)
 
 
 def _create_env__stableretro(env_id):
