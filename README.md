@@ -49,6 +49,18 @@ uv run python main.py record Airstriker-Genesis --fps 60
 
 Press **Space** to start recording. Use **ESC** to stop and exit.
 
+### 🤖 Automated collection (random agent)
+
+```bash
+# Collect 100 episodes headlessly at max speed
+uv run gymrec record SuperMarioBros-Nes --agent random --headless --episodes 100
+
+# Same but with display (for monitoring)
+uv run gymrec record SuperMarioBros-Nes --agent random --episodes 10
+```
+
+`--headless` skips rendering for maximum collection speed. `--episodes` defaults to 1 if omitted.
+
 ### 🔄 Replay a dataset
 
 ```bash
@@ -69,9 +81,9 @@ Shows all available Atari, Stable-Retro, and VizDoom environments.
 
 | Platform | Examples | Default FPS |
 |----------|----------|-------------|
-| 🕹️ Atari (ALE-py) | `BreakoutNoFrameskip-v4`, `PongNoFrameskip-v4` | 15 |
-| 🔫 VizDoom | `VizdoomBasic-v0`, `VizdoomCorridor-v0` | 35 |
-| 🎲 Stable-Retro | `Airstriker-Genesis`, `SuperMarioBros-Nes` | 60 |
+| 🕹️ Atari (ALE-py) | `BreakoutNoFrameskip-v4`, `PongNoFrameskip-v4` | 90 |
+| 🔫 VizDoom | `VizdoomBasic-v0`, `VizdoomCorridor-v0` | 45 |
+| 🎲 Stable-Retro | `Airstriker-Genesis`, `SuperMarioBros-Nes` | 90 |
 
 ### 🎮 Controls
 

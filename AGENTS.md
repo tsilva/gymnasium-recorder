@@ -99,7 +99,7 @@ All code is in `main.py`. The project prioritizes simplicity over modularization
   - VizDoom: MultiBinary actions (or Dict with binary/continuous)
   - Stable-Retro: MultiBinary actions, platform-specific mappings
 
-**Environment Creation** (main.py:674-701)
+**Environment Creation** (main.py:2653)
 - `create_env()` detects environment type by pattern matching env_id
 - Adds `_env_id`, `_vizdoom`, or `_stable_retro` attributes to distinguish backends
 - Each backend has different initialization requirements and action spaces
@@ -116,9 +116,9 @@ All code is in `main.py`. The project prioritizes simplicity over modularization
 - Auto-generates dataset cards with episode/frame statistics
 - Fields: episode_id, timestamp, image (HFImage), step, action
 
-**FPS Handling** (main.py:718-755)
+**FPS Handling** (main.py:2713)
 - Attempts to read from environment metadata first
-- Falls back to defaults: Atari=15fps, VizDoom=35fps, Retro=60fps
+- Falls back to defaults: Atari=90fps, VizDoom=45fps, Retro=90fps (see config.toml)
 - Pattern matches env_id when metadata unavailable
 
 ## Important Patterns
@@ -197,8 +197,20 @@ Policies receive the full observation (RGB array) and must return actions compat
 - **MultiBinary**: Return a numpy array of 0s and 1s
 - **Dict**: Return a dict with appropriate keys
 
+## Configuration Files
+
+- `config.toml` — Override display scale, FPS defaults, dataset settings, overlay. All keys commented out by default.
+- `keymappings.toml` — Customize key bindings per platform (Atari, VizDoom, Stable-Retro).
+
+## CLI Shorthand
+
+The `gymrec` entry point is installed in the venv:
+```bash
+uv run gymrec record BreakoutNoFrameskip-v4
+uv run gymrec playback BreakoutNoFrameskip-v4
+```
+
 ## Current TODOs
 
-From TODO.md:
 - Add Doom WAD support
 - Add validation for dataset fields
