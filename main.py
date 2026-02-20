@@ -1424,7 +1424,12 @@ class DatasetRecorderWrapper(gym.Wrapper):
             clock.tick(overlay_cfg["fps"])
 
     async def record(
-        self, fps=None, max_episodes=None, max_steps=None, progress_callback=None
+        self,
+        fps=None,
+        max_episodes=None,
+        max_steps=None,
+        progress_callback=None,
+        step_callback=None,
     ):
         """Record a gameplay session at the desired FPS.
 
@@ -1433,12 +1438,14 @@ class DatasetRecorderWrapper(gym.Wrapper):
             max_episodes: Maximum number of episodes to record (None = unlimited for human, 1 for agent)
             max_steps: Maximum steps per episode (truncates episode after N steps)
             progress_callback: Optional callable(episode_number, steps_in_episode) called after each episode
+            step_callback: Optional callable(episode_number, step_number) called during each step for live updates
         """
         if fps is None:
             fps = get_default_fps(self.env)
         self._max_episodes = max_episodes
         self._max_steps_per_episode = max_steps
         self._progress_callback = progress_callback
+        self._step_callback = step_callback
         self.recording = True
         try:
             return await self._record(fps=fps)
@@ -1538,6 +1545,10 @@ class DatasetRecorderWrapper(gym.Wrapper):
                 await asyncio.sleep(0)
 
             step += 1
+
+            # Call step callback for live progress updates
+            if self._step_callback is not None:
+                self._step_callback(self._episode_count, step)
 
             # Truncate episode if max_steps reached
             if (
@@ -3375,6 +3386,15 @@ def _worker_collect_episodes(
             except Exception:
                 pass
 
+        def step_callback(episode_number, step_number):
+            try:
+                progress_queue.put(
+                    ("step", worker_id, episode_number, step_number),
+                    block=False,
+                )
+            except Exception:
+                pass
+
         import asyncio as _asyncio
 
         recorded_dataset = _asyncio.run(
@@ -3383,6 +3403,7 @@ def _worker_collect_episodes(
                 max_episodes=num_episodes,
                 max_steps=max_steps,
                 progress_callback=progress_callback,
+                step_callback=step_callback,
             )
         )
 
@@ -3445,6 +3466,9 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
     total_steps = 0
     episodes_done = 0
 
+    # Track per-worker state
+    worker_states = {wid: {"episode": 0, "step": 0} for wid, _ in active_counts}
+
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -3455,7 +3479,16 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
         console=console,
         transient=False,
     ) as progress:
-        task_id = progress.add_task("[bold]Episodes[/]", total=total_episodes)
+        # Create per-worker progress bars
+        worker_task_ids = {}
+        for wid, num_eps in active_counts:
+            worker_task_ids[wid] = progress.add_task(
+                f"[cyan]Worker {wid}[/] [dim]waiting...[/]",
+                total=num_eps,
+            )
+
+        # Main overall progress bar
+        main_task_id = progress.add_task("[bold]Episodes[/]", total=total_episodes)
 
         try:
             while completed_workers < actual_workers:
@@ -3478,12 +3511,29 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
                     continue
 
                 msg_type = msg[0]
-                if msg_type == "progress":
+                if msg_type == "step":
+                    # Live step update from a worker
+                    _, wid, episode_number, step_number = msg
+                    worker_states[wid]["episode"] = episode_number
+                    worker_states[wid]["step"] = step_number
+                    progress.update(
+                        worker_task_ids[wid],
+                        description=f"[cyan]Worker {wid}[/] [dim]Ep {episode_number}, Step {step_number}[/]",
+                    )
+                elif msg_type == "progress":
+                    # Episode completed
                     _, wid, episode_number, steps_in_episode = msg
                     total_steps += steps_in_episode
                     episodes_done += 1
+                    worker_states[wid]["episode"] = episode_number
+                    worker_states[wid]["step"] = 0
                     progress.update(
-                        task_id,
+                        worker_task_ids[wid],
+                        advance=1,
+                        description=f"[cyan]Worker {wid}[/] [dim]Ep {episode_number} done ({steps_in_episode} steps)[/]",
+                    )
+                    progress.update(
+                        main_task_id,
                         advance=1,
                         description=f"[bold]Episodes[/] [dim]({total_steps} steps total)[/]",
                     )
@@ -3492,10 +3542,21 @@ def _parallel_record(env_id, num_workers, total_episodes, max_steps, agent_type,
                     worker_paths[wid] = path
                     if metadata is not None:
                         worker_metadata[wid] = metadata
+                    # Mark worker task as complete
+                    if wid in worker_task_ids:
+                        progress.update(
+                            worker_task_ids[wid],
+                            description=f"[green]Worker {wid}[/] [dim]complete[/]",
+                        )
                     completed_workers += 1
                 elif msg_type == "error":
                     _, wid, err_msg, tb = msg
                     console.print(f"[{STYLE_FAIL}]Worker {wid} error: {err_msg}[/]")
+                    if wid in worker_task_ids:
+                        progress.update(
+                            worker_task_ids[wid],
+                            description=f"[red]Worker {wid}[/] [dim]error[/]",
+                        )
                     worker_paths[wid] = None
                     completed_workers += 1
 
