@@ -3750,9 +3750,23 @@ async def main():
             if workers > 1:
                 args.headless = True  # Force headless for parallel workers
 
+            # Don't allow headless mode without specifying episodes
+            if args.headless and args.episodes is None:
+                console.print(
+                    f"[{STYLE_FAIL}]Error: --headless requires --episodes to be specified[/]"
+                )
+                return
+
             # Default to 1 episode for agent if not specified
             max_episodes = args.episodes if args.episodes is not None else 1
             max_steps = getattr(args, "max_steps", None)
+
+            # Don't allow more workers than episodes
+            if workers > max_episodes:
+                console.print(
+                    f"[{STYLE_FAIL}]Error: --workers ({workers}) cannot be greater than --episodes ({max_episodes})[/]"
+                )
+                return
 
             mode_str = "headless" if args.headless else "with display"
             console.print(
