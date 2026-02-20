@@ -847,6 +847,225 @@ class MarioRightJumpPolicy(BasePolicy):
         return action
 
 
+class BreakoutCatcherPolicy(BasePolicy):
+    """Deterministic policy that tracks and catches the ball in Breakout.
+
+    Uses improved computer vision to detect ball and paddle positions with
+    better filtering to distinguish ball from bricks. Tracks ball x-position
+    continuously and keeps paddle centered on the ball at all times.
+
+    BreakoutNoFrameskip-v4 action space (Discrete):
+    - 0: NOOP
+    - 1: FIRE
+    - 2: RIGHT
+    - 3: LEFT
+    """
+
+    def __init__(self, action_space):
+        super().__init__(action_space)
+        # ALE Breakout action indices (Discrete(4)):
+        # 0: NOOP, 1: FIRE, 2: RIGHT, 3: LEFT
+        self.NOOP = 0
+        self.FIRE = 1
+        self.RIGHT = 2
+        self.LEFT = 3
+
+        self._step_counter = 0
+        self._prev_ball_pos = None  # (x, y) tuple
+        self._ball_velocity = (0, 0)  # (vx, vy) for prediction
+        self._frames_without_ball = 0
+        self._paddle_width = 16  # ALE Breakout paddle width in pixels
+
+        # Detection thresholds
+        # Ball: bright pixels (RGB >= 200) - ALE uses value 200 for bright objects
+        self.BALL_THRESHOLD = 200
+        # Ball size in pixels (approximately 4 pixels in ALE)
+        self.BALL_SIZE_MIN = 2
+        self.BALL_SIZE_MAX = 12
+        # Paddle: gray in ALE (RGB all around 142)
+        self.PADDLE_MIN = 135
+        self.PADDLE_MAX = 150
+
+        # Warning threshold
+        self._warned_no_ball = False
+
+    def __call__(self, observation):
+        """Return action to catch the ball based on improved CV."""
+        import numpy as np
+
+        self._step_counter += 1
+
+        # Observation is RGB array (210, 160, 3) for Breakout
+        obs = np.array(observation)
+
+        # Find ball with improved detection
+        ball_pos = self._find_ball(obs)
+
+        # ALWAYS print ball X position (or -1 if not found)
+        if ball_pos is None:
+            ball_x, ball_y = -1, -1
+            print(f"[BALL] x={ball_x:3d}, y={ball_y:3d} [NOT DETECTED]")
+            self._frames_without_ball += 1
+            # No ball found - fire to launch
+            return self.FIRE
+        else:
+            ball_x, ball_y = ball_pos
+            print(f"[BALL] x={ball_x:3d}, y={ball_y:3d}")
+            self._frames_without_ball = 0
+
+            # Calculate velocity for prediction
+            if self._prev_ball_pos is not None:
+                vx = ball_pos[0] - self._prev_ball_pos[0]
+                vy = ball_pos[1] - self._prev_ball_pos[1]
+                self._ball_velocity = (vx, vy)
+
+            self._prev_ball_pos = ball_pos
+
+        # Fire every 50 steps to handle game states
+        if self._step_counter % 50 == 0:
+            return self.FIRE
+
+        # Find paddle: bottom area of screen
+        paddle_center, paddle_left, paddle_right = self._find_paddle(obs)
+
+        # Print paddle detection
+        if paddle_center is None:
+            print(f"[PADDLE] NOT DETECTED")
+            # Can't find paddle, just fire and hope for the best
+            return self.FIRE
+        else:
+            print(
+                f"[PADDLE] center={paddle_center:3d}, left={paddle_left:3d}, right={paddle_right:3d}"
+            )
+
+        # Always track ball's current x position directly
+        # No deadzone - paddle center should always match ball x exactly
+
+        if ball_x < paddle_center:
+            return self.LEFT
+        elif ball_x > paddle_center:
+            return self.RIGHT
+        else:
+            # Paddle is centered - occasionally fire to handle game states
+            if self._step_counter % 30 == 0:
+                return self.FIRE
+            return self.NOOP
+
+    def _find_ball(self, obs):
+        """Find ball position by detecting non-black pixels in the ball-only region.
+
+        Ball-only bounding box for ALE Breakout (exclusive on both ends):
+        x_min = 8, y_min = 94, x_max = 151, y_max = 188
+
+        Returns:
+            tuple: (x, y) position of ball center, or None if not found
+        """
+        import numpy as np
+
+        # Ball-only bounding box (exclusive on both ends)
+        x_min, y_min = 8, 94
+        x_max, y_max = 151, 188
+
+        # Extract the ball region
+        ball_region = obs[y_min:y_max, x_min:x_max, :]
+
+        # Find non-black pixels (ball is any non-zero pixel in this region)
+        # Sum across RGB channels - if any channel is non-zero, it's not black
+        pixel_sum = np.sum(ball_region, axis=2)
+        non_black_mask = pixel_sum > 0
+
+        if not np.any(non_black_mask):
+            return None
+
+        # Get coordinates of non-black pixels
+        local_rows, local_cols = np.where(non_black_mask)
+
+        # Convert to global coordinates
+        rows = local_rows + y_min
+        cols = local_cols + x_min
+
+        # Group by row to find ball vs noise
+        unique_rows, counts = np.unique(rows, return_counts=True)
+
+        # Find rows with small counts (ball) vs large counts (bricks/artifacts)
+        ball_candidates = []
+        for row_idx, row in enumerate(unique_rows):
+            count = counts[row_idx]
+            if count > self.BALL_SIZE_MAX:  # Too wide, skip
+                continue
+            if count < self.BALL_SIZE_MIN:  # Too small, noise
+                continue
+
+            # Get pixels in this row
+            row_mask = rows == row
+            row_cols = cols[row_mask]
+            center_x = int(np.mean(row_cols))
+            ball_candidates.append((center_x, int(row), count))
+
+        if not ball_candidates:
+            return None
+
+        # Prefer the candidate closest to previous ball position if available
+        if self._prev_ball_pos is not None:
+            prev_x, prev_y = self._prev_ball_pos
+            # Find closest candidate
+            best = min(
+                ball_candidates, key=lambda c: abs(c[0] - prev_x) + abs(c[1] - prev_y)
+            )
+        else:
+            # Prefer lower ball (closer to paddle) if multiple candidates
+            best = max(ball_candidates, key=lambda c: c[1])
+
+        ball_x, ball_y = best[0], best[1]
+        return (ball_x, ball_y)
+
+    def _find_paddle(self, obs):
+        """Find paddle position with improved detection.
+
+        Returns:
+            tuple: (center_x, left_x, right_x) or (None, None, None) if not found
+        """
+        import numpy as np
+
+        # Paddle is in bottom ~15% of screen (rows ~180-210 in ALE Breakout)
+        h, w = obs.shape[:2]
+        bottom_region = obs[int(h * 0.78) :, :, :]
+
+        # Find paddle (gray pixels in ALE, all channels similar value 130-160)
+        r = bottom_region[:, :, 0].astype(int)
+        g = bottom_region[:, :, 1].astype(int)
+        b = bottom_region[:, :, 2].astype(int)
+
+        # Paddle is gray: all channels roughly equal
+        gray_mask = (np.abs(r - g) < 15) & (np.abs(g - b) < 15)
+        paddle_mask = gray_mask & (r >= self.PADDLE_MIN) & (r <= self.PADDLE_MAX)
+
+        if not np.any(paddle_mask):
+            return None, None, None
+
+        # Find all paddle pixels
+        rows, cols = np.where(paddle_mask)
+
+        if len(cols) == 0:
+            return None, None, None
+
+        # Calculate paddle boundaries
+        left_x = int(np.min(cols))
+        right_x = int(np.max(cols))
+        center_x = int((left_x + right_x) / 2)
+
+        # Validate paddle width (should be around 16 pixels in ALE)
+        paddle_width = right_x - left_x
+        if paddle_width < 4 or paddle_width > 32:
+            # Unreasonable width, might be noise or multiple objects
+            # Fall back to just using the mean
+            center_x = int(np.mean(cols))
+            left_x = center_x - self._paddle_width // 2
+            right_x = center_x + self._paddle_width // 2
+
+        return center_x, left_x, right_x
+
+
 class DatasetRecorderWrapper(gym.Wrapper):
     """
     Gymnasium wrapper for recording and replaying Atari gameplay as Hugging Face datasets.
@@ -3369,6 +3588,8 @@ def _worker_collect_episodes(
             policy = RandomPolicy(env.action_space)
         elif agent_type == "mario":
             policy = MarioRightJumpPolicy(env.action_space)
+        elif agent_type == "breakout":
+            policy = BreakoutCatcherPolicy(env.action_space)
         else:
             raise ValueError(f"Unknown agent type: {agent_type}")
 
@@ -3636,7 +3857,7 @@ async def main():
         "--agent",
         type=str,
         default="human",
-        choices=["human", "random", "mario"],
+        choices=["human", "random", "mario", "breakout"],
         help="Input source: human (keyboard), random policy, or mario policy (default: human)",
     )
     parser_record.add_argument(
@@ -3802,7 +4023,7 @@ async def main():
             )
         else:
             # Agent mode
-            if args.agent not in ("random", "mario"):
+            if args.agent not in ("random", "mario", "breakout"):
                 console.print(
                     f"[{STYLE_FAIL}]Error: Unknown agent type '{args.agent}'[/]"
                 )
@@ -3863,6 +4084,8 @@ async def main():
                     policy = RandomPolicy(env.action_space)
                 elif args.agent == "mario":
                     policy = MarioRightJumpPolicy(env.action_space)
+                elif args.agent == "breakout":
+                    policy = BreakoutCatcherPolicy(env.action_space)
                 input_source = AgentInputSource(policy, headless=args.headless)
 
                 recorder = DatasetRecorderWrapper(

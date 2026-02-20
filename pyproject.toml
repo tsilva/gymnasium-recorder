@@ -21,6 +21,7 @@ dependencies = [
     "huggingface-hub",
     "simple-term-menu",
     "stable-retro",
+    "scipy>=1.17.0",
 ]
 
 [project.scripts]
